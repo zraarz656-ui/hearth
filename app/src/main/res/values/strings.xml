@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TradeQuest</string>
+
+    <string name="nav_home">Home</string>
+    <string name="nav_market_library">Markets</string>
+    <string name="nav_trading">Trading</string>
+    <string name="nav_challenge">Challenge</string>
+    <string name="nav_news">News</string>
+    <string name="nav_journal">Journal</string>
+    <string name="nav_history">History</string>
+    <string name="nav_settings">Settings</string>
+
+    <string name="placeholder_title">Not implemented yet</string>
+    <string name="placeholder_body">This screen is a development placeholder. It is intentionally unfinished and will be built in a later phase.</string>
+</resources>

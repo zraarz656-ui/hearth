@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Simple candlestick mark: two bodies and a wick. -->
+    <path
+        android:fillColor="#FFD4A017"
+        android:pathData="M34,38 h10 v30 h-10 z" />
+    <path
+        android:fillColor="#FFD4A017"
+        android:pathData="M39,28 h1 v10 h-1 z" />
+    <path
+        android:fillColor="#FFD4A017"
+        android:pathData="M39,68 h1 v12 h-1 z" />
+    <path
+        android:fillColor="#FF3D7DCA"
+        android:pathData="M60,50 h10 v22 h-10 z" />
+    <path
+        android:fillColor="#FF3D7DCA"
+        android:pathData="M65,40 h1 v10 h-1 z" />
+    <path
+        android:fillColor="#FF3D7DCA"
+        android:pathData="M65,72 h1 v10 h-1 z" />
+</vector>

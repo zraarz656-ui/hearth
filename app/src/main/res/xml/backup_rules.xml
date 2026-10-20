@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Player database and settings are backed up; imported market data is not
+         included because it can be re-imported from source. -->
+    <include domain="database" path="tradequest.db" />
+    <include domain="sharedpref" path="." />
+</full-backup-content>

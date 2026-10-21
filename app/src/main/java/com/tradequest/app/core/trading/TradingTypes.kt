@@ -46,8 +46,12 @@ enum class CloseReason {
     TAKE_PROFIT,
     /** Closed by the user, in full or in part. */
     MANUAL,
-    /** Closed by the broker's stop-out rule (Phase 6). */
+    /** Closed by the broker's stop-out rule (Step 6.8). */
     STOP_OUT,
+    /** Closed because the daily floor was hit and the account was flattened (Step 6.9). */
+    DAILY_LOSS_LIMIT,
+    /** Closed because the challenge failed (Step 6.10). */
+    CHALLENGE_FAILED,
     /** Closed because the season ended or the dataset ran out. */
     SEASON_END,
 }
@@ -241,6 +245,7 @@ data class AccountState(
 
 /** A user action (Step 5.1). */
 sealed interface TradingCommand {
+
     /** The instant the command was issued, in simulated time. */
     val atSimUtcMs: Long
 
@@ -309,6 +314,12 @@ enum class RejectionReason {
     MARKET_CLOSED,
     /** The command names an order that is no longer pending. */
     ORDER_NOT_PENDING,
+    /** The day's loss limit was hit; trading resumes at the next rollover (Step 6.9). */
+    TRADING_DAY_LOCKED,
+    /** The challenge has failed and no further trading is allowed (Steps 6.9-6.10). */
+    CHALLENGE_FAILED,
+    /** The account has no margin headroom for the requested size (Step 6.5). */
+    INSUFFICIENT_MARGIN,
 }
 
 /** The outcome of a [TradingCommand]. */
@@ -349,6 +360,48 @@ sealed interface TradingEvent {
         val toUnits: Int,
         val cause: StopMoveCause,
     ) : TradingEvent
+
+    /** A margin warning became due (Step 6.7). Emitted once per crossing, not per segment. */
+    data class MarginWarning(
+        override val atSimUtcMs: Long,
+        val marginLevelPercent: Long,
+    ) : TradingEvent
+
+    /** A position was liquidated by the stop-out rule (Step 6.8). */
+    data class StopOutExecuted(
+        override val atSimUtcMs: Long,
+        val positionId: String,
+        val trade: ClosedTrade,
+        /** Margin level after the liquidation, or null when nothing is left open. */
+        val marginLevelPercentAfter: Long?,
+    ) : TradingEvent
+
+    /** The daily floor was reached; positions were flattened and trading locked (Step 6.9). */
+    data class DailyLossLimitHit(
+        override val atSimUtcMs: Long,
+        val equityMicros: Long,
+        val dayStartEquityMicros: Long,
+        val floorMicros: Long,
+        /** Strikes accumulated so far, including this one. */
+        val dailyLossStrikes: Int,
+        /** True when this strike exhausted the allowance and failed the challenge. */
+        val challengeFailed: Boolean,
+    ) : TradingEvent
+
+    /** The challenge failed at the static floor (Step 6.10). */
+    data class ChallengeFailed(
+        override val atSimUtcMs: Long,
+        val equityMicros: Long,
+        val reason: RiskFailureReason,
+    ) : TradingEvent
+
+    /** The 17:00 New York rollover reset the daily budget (Step 6.9). */
+    data class TradingDayRolled(
+        override val atSimUtcMs: Long,
+        val dayStartEquityMicros: Long,
+        /** False when the challenge had already failed, so the day is not tradeable. */
+        val tradingResumed: Boolean,
+    ) : TradingEvent
 }
 
 /** Why an effective stop moved (Step 5.13). */
@@ -364,9 +417,26 @@ data class TradingState(
     val closedTrades: List<ClosedTrade>,
     /** Simulated time the engine has processed up to, exclusive. */
     val processedToSimUtcMs: Long,
+    /** Equity at the current trading day's 17:00 New York rollover (Step 6.9). */
+    val dayStartEquityMicros: Long = balanceMicros,
+    /** Epoch day of the trading date the current daily budget belongs to. */
+    val dayEpochDay: Long = 0L,
+    /** Daily-floor breaches accumulated across the challenge (Step 6.9). */
+    val dailyLossStrikes: Int = 0,
+    /** True when the current day's loss limit was hit; clears at the next rollover. */
+    val dayLocked: Boolean = false,
+    /** True when the challenge has failed; never clears (Steps 6.9-6.10). */
+    val challengeFailed: Boolean = false,
+    /** Why the challenge failed, when it has. */
+    val failureReason: RiskFailureReason? = null,
+    /** True while a margin warning is showing, so it is emitted once per crossing. */
+    val marginWarningActive: Boolean = false,
 ) {
     val openPositions: List<Position> get() = positions.filter { it.isOpen }
     val pendingOrders: List<TradeOrder> get() = orders.filter { it.isPending }
+
+    /** True when no further trading is allowed, for any reason. */
+    val tradingBlocked: Boolean get() = challengeFailed || dayLocked
 }
 
 /** Unrealised PnL of one position at a given exit-side price. */

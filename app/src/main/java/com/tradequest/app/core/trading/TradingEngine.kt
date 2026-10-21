@@ -2,6 +2,7 @@ package com.tradequest.app.core.trading
 
 import com.tradequest.app.core.accounting.CommissionSchedule
 import com.tradequest.app.core.accounting.MoneyScale
+import com.tradequest.app.core.simulation.calendar.NewYorkTradingCalendar
 import com.tradequest.app.core.simulation.path.CANDLE_DURATION_MS
 import com.tradequest.app.core.simulation.path.MarketPathStep
 import com.tradequest.app.core.simulation.path.MarketPathWindow
@@ -21,6 +22,15 @@ data class TradingContext(
      * phase can set it from data rather than discovering it is missing.
      */
     val swapMicrosPerLotPerDay: Long = 0L,
+
+    /**
+     * The account-level risk policy, or null for none (Phase 6).
+     *
+     * Null means the engine enforces no margin, stop-out or daily-loss rule, which
+     * is the Phase 5 behaviour the existing tests rely on. Supplying a policy turns
+     * on the chronological risk checks of Steps 6.7-6.10.
+     */
+    val riskPolicy: RiskPolicy? = null,
 )
 
 /** A trigger, resolved to the instant it fires and the bid it fills at. */
@@ -92,6 +102,22 @@ class TradingEngine(
                 RejectionReason.LOOK_BACK_COMMAND,
                 "command at ${command.atSimUtcMs} precedes processed time " +
                     "${state.processedToSimUtcMs}",
+            )
+        }
+
+        // Risk gate (Steps 6.9-6.10). A failed challenge blocks everything; a
+        // locked day blocks new exposure but still allows reducing it, so the user
+        // can close what they hold rather than being trapped in it.
+        if (state.challengeFailed) {
+            return CommandResult.Rejected(
+                RejectionReason.CHALLENGE_FAILED,
+                "the challenge has failed: ${state.failureReason}",
+            )
+        }
+        if (state.dayLocked && command.increasesExposure()) {
+            return CommandResult.Rejected(
+                RejectionReason.TRADING_DAY_LOCKED,
+                "the daily loss limit was reached; trading resumes at the next rollover",
             )
         }
 
@@ -366,6 +392,8 @@ class TradingEngine(
         val from = state.processedToSimUtcMs
         if (toSimUtcMs <= from) return emptyList()
 
+        seedTradingDay(from)
+
         val events = mutableListOf<TradingEvent>()
         var cursor = from
 
@@ -382,6 +410,28 @@ class TradingEngine(
 
         state = state.copy(processedToSimUtcMs = maxOf(state.processedToSimUtcMs, toSimUtcMs))
         return events
+    }
+
+    /**
+     * Establishes the first trading day's reference equity (Step 6.9).
+     *
+     * The state's day field starts unset, so without this the first risk evaluation
+     * would report a rollover and emit a `TradingDayRolled` event at the season's
+     * very first segment.
+     *
+     * Only the *day* is seeded, not the reference equity: that is the caller's to
+     * state, and [TradingState.dayStartEquityMicros] already defaults to the
+     * opening balance. Overwriting it here would discard a deliberately chosen
+     * reference — a season that starts mid-day, for instance.
+     *
+     * Only runs when a policy is set; with none there is no daily budget to track.
+     */
+    private fun seedTradingDay(fromUtcMs: Long) {
+        if (context.riskPolicy == null) return
+        if (state.dayEpochDay != 0L) return
+        state = state.copy(
+            dayEpochDay = NewYorkTradingCalendar.tradingDateOf(fromUtcMs).toEpochDay(),
+        )
     }
 
     /**
@@ -438,6 +488,7 @@ class TradingEngine(
         val gap = window.gapContaining(fromUtcMs)
         if (gap != null) {
             events += applyGapTriggers(gap, fromUtcMs, toUtcMs)
+            events += evaluateRisk(fromUtcMs, toUtcMs)
             return events
         }
 
@@ -447,6 +498,9 @@ class TradingEngine(
         // Only now ratchet trailing and breakeven stops, using the price just
         // reached. See the ordering note above.
         events += applyProtectiveRules(fromUtcMs, toUtcMs)
+
+        // Risk last, so it sees the balance and positions this segment produced.
+        events += evaluateRisk(fromUtcMs, toUtcMs)
 
         return events
     }
@@ -1140,6 +1194,292 @@ class TradingEngine(
             cause = cause,
         )
         return position.copy(activeStopUnits = candidateUnits)
+    }
+
+    // -------------------------------------------------------------------- risk
+
+    /**
+     * True when a command can only add exposure (Steps 6.9-6.10).
+     *
+     * A locked day still permits reducing risk: closing a position, cancelling a
+     * pending order, or tightening a stop. Blocking those would leave a user
+     * unable to exit a position on a day the account had already lost its budget,
+     * which is the opposite of what a loss limit is for.
+     *
+     * A modification is permitted even when it loosens a stop: it cannot create a
+     * position, and refusing every modification would also refuse the tightening
+     * ones, leaving the user unable to reduce risk either.
+     */
+    private fun TradingCommand.increasesExposure(): Boolean = when (this) {
+        is TradingCommand.PlaceOrder -> true
+        is TradingCommand.ModifyOrder -> false
+        is TradingCommand.CancelOrder -> false
+        is TradingCommand.ModifyPosition -> false
+        is TradingCommand.ClosePosition -> false
+    }
+
+    /**
+     * Marks the account and runs the risk policy for `[fromUtcMs, toUtcMs]` (Phase 6).
+     *
+     * # Where this sits in the segment order
+     *
+     * It runs **last**, after pending orders, exits and protective rules, so the
+     * equity it sees already includes every fill and every stop move in the
+     * segment. Running it earlier would evaluate risk against a stale balance and
+     * could miss a stop-out that this segment's own fills caused.
+     *
+     * # Marking
+     *
+     * Each open position is marked at its **exit-side** price at the end of the
+     * segment — the bid for a long, the ask for a short — because that is what
+     * closing it would realise. A position is marked at its entry price when the
+     * segment has no price at all, which is the neutral choice: it can neither
+     * invent a loss nor hide one.
+     *
+     * # Ordering inside
+     *
+     * Stop-out runs before the daily-loss check. A liquidation changes equity, and
+     * the daily floor should be tested against the account as it stands *after* the
+     * broker has acted, not before — otherwise a stop-out that rescued the account
+     * would still register a daily strike.
+     */
+    private fun evaluateRisk(fromUtcMs: Long, toUtcMs: Long): List<TradingEvent> {
+        val policy = context.riskPolicy ?: return emptyList()
+        if (toUtcMs <= fromUtcMs) return emptyList()
+
+        val events = mutableListOf<TradingEvent>()
+
+        // Mark every open position at the segment end.
+        val marks = mutableMapOf<String, Int>()
+        for (position in state.openPositions) {
+            val bid = window.priceAt(toUtcMs) ?: window.priceAt(fromUtcMs)
+            if (bid != null) {
+                val spread = SpreadModel.spreadUnitsFor(toUtcMs, context.newsReleaseTimesUtcMs)
+                marks[position.positionId] = Quote(bid, spread).exitPriceUnits(position.side)
+            }
+        }
+
+        var verdict = riskDecision(marks, toUtcMs)
+
+        // Stop-out (Step 6.8): close the worst loser, re-evaluate, repeat.
+        var guard = 0
+        while (verdict.stopOutRequired && guard < MAX_SEGMENT_STEPS) {
+            val nextId = verdict.stopOutOrder.firstOrNull() ?: break
+            val position = state.positions.firstOrNull { it.positionId == nextId } ?: break
+            val closed = liquidate(position, toUtcMs, CloseReason.STOP_OUT)
+                ?: break
+            marks.remove(nextId)
+
+            verdict = riskDecision(marks, toUtcMs)
+            events += TradingEvent.StopOutExecuted(
+                atSimUtcMs = toUtcMs,
+                positionId = position.positionId,
+                trade = closed,
+                marginLevelPercentAfter = currentMarginLevel(marks),
+            )
+            guard++
+        }
+
+        // Warning (Step 6.7): emit only on the transition into the warning zone.
+        // The policy decided this; the engine only reports the transition.
+        val warningNow = verdict.marginWarning
+        if (warningNow && !state.marginWarningActive) {
+            events += TradingEvent.MarginWarning(
+                atSimUtcMs = toUtcMs,
+                marginLevelPercent = currentMarginLevel(marks) ?: 0L,
+            )
+        }
+
+        // Daily floor (Step 6.9) and static floor (Step 6.10).
+        events += applyLossLimits(verdict, toUtcMs)
+
+        state = state.copy(
+            dayStartEquityMicros = verdict.dayStartEquityMicros,
+            dayEpochDay = verdict.dayEpochDay,
+            dailyLossStrikes = verdict.dailyLossStrikes,
+            dayLocked = verdict.dayLocked,
+            challengeFailed = state.challengeFailed || verdict.failureReason != null,
+            failureReason = state.failureReason ?: verdict.failureReason,
+            marginWarningActive = warningNow,
+        )
+        return events
+    }
+
+    /**
+     * The account's margin level right now, for reporting after a liquidation.
+     *
+     * Computed here rather than taken from the decision because the decision does
+     * not carry margin figures: it answers "what should happen", and this is
+     * "what is", measured after the engine has acted.
+     */
+    private fun currentMarginLevel(marks: Map<String, Int>): Long? {
+        val used = MarginMath.usedMarginMicros(state.openPositions, contract)
+        val unrealized = MarginMath.totalUnrealizedPnl(
+            positions = state.openPositions,
+            markOf = { marks[it.positionId] ?: it.openPriceUnits },
+            contract = contract,
+        )
+        val equity = com.tradequest.app.core.accounting.AccountMath.equityMicros(
+            state.balanceMicros,
+            unrealized,
+        )
+        return MarginMath.marginLevelPercent(equity, used)
+    }
+
+    /**
+     * Builds the snapshot and asks the policy.
+     *
+     * [atUtcMs] is the instant being evaluated — the end of the segment — not
+     * [TradingState.processedToSimUtcMs], which still points at the segment's
+     * start. Passing the stale value would make the rollover check look at the
+     * wrong day and reset the day reference one segment late.
+     */
+    private fun riskDecision(marks: Map<String, Int>, atUtcMs: Long): RiskDecision {
+        val policy = context.riskPolicy
+            ?: return RiskDecision.inactive(emptySnapshot(marks, atUtcMs))
+        val used = MarginMath.usedMarginMicros(state.openPositions, contract)
+        val unrealized = MarginMath.totalUnrealizedPnl(
+            positions = state.openPositions,
+            markOf = { marks[it.positionId] ?: it.openPriceUnits },
+            contract = contract,
+        )
+        val equity = com.tradequest.app.core.accounting.AccountMath.equityMicros(
+            state.balanceMicros,
+            unrealized,
+        )
+        return policy.evaluate(
+            RiskSnapshot(
+                atSimUtcMs = atUtcMs,
+                equityMicros = equity,
+                openPositions = state.openPositions,
+                positionMarks = marks,
+                contract = contract,
+                marginLevelPercent = MarginMath.marginLevelPercent(equity, used),
+                dayStartEquityMicros = state.dayStartEquityMicros,
+                dayEpochDay = state.dayEpochDay,
+                dailyLossStrikes = state.dailyLossStrikes,
+                dayLocked = state.dayLocked,
+                challengeFailed = state.challengeFailed,
+            ),
+        )
+    }
+
+    private fun emptySnapshot(marks: Map<String, Int>, atUtcMs: Long): RiskSnapshot = RiskSnapshot(
+        atSimUtcMs = atUtcMs,
+        equityMicros = state.balanceMicros,
+        openPositions = emptyList(),
+        positionMarks = marks,
+        contract = contract,
+        marginLevelPercent = null,
+        dayStartEquityMicros = state.dayStartEquityMicros,
+        dayEpochDay = state.dayEpochDay,
+        dailyLossStrikes = state.dailyLossStrikes,
+        dayLocked = state.dayLocked,
+        challengeFailed = state.challengeFailed,
+    )
+
+    /**
+     * Applies the daily and static loss limits, flattening when required
+     * (Steps 6.9-6.10).
+     */
+    private fun applyLossLimits(
+        verdict: RiskDecision,
+        atUtcMs: Long,
+    ): List<TradingEvent> {
+        val events = mutableListOf<TradingEvent>()
+
+        if (verdict.newDay) {
+            events += TradingEvent.TradingDayRolled(
+                atSimUtcMs = atUtcMs,
+                dayStartEquityMicros = verdict.dayStartEquityMicros,
+                tradingResumed = !state.challengeFailed && verdict.failureReason == null,
+            )
+        }
+
+        if (verdict.dailyFloorBreached) {
+            // Flatten everything and cancel what is resting (Step 6.9).
+            val flattened = flattenAll(atUtcMs, CloseReason.DAILY_LOSS_LIMIT)
+            events += TradingEvent.DailyLossLimitHit(
+                atSimUtcMs = atUtcMs,
+                equityMicros = verdict.equityMicros,
+                dayStartEquityMicros = verdict.dayStartEquityMicros,
+                floorMicros = verdict.dailyFloorMicros,
+                dailyLossStrikes = verdict.dailyLossStrikes,
+                challengeFailed = verdict.failureReason != null,
+            )
+            if (verdict.failureReason != null) {
+                events += TradingEvent.ChallengeFailed(
+                    atSimUtcMs = atUtcMs,
+                    equityMicros = verdict.equityMicros,
+                    reason = verdict.failureReason,
+                )
+            }
+        } else if (verdict.failureReason == RiskFailureReason.STATIC_FLOOR_BREACHED) {
+            flattenAll(atUtcMs, CloseReason.CHALLENGE_FAILED)
+            events += TradingEvent.ChallengeFailed(
+                atSimUtcMs = atUtcMs,
+                equityMicros = verdict.equityMicros,
+                reason = verdict.failureReason,
+            )
+        }
+
+        return events
+    }
+
+
+    /**
+     * Closes every open position and cancels every pending order (Step 6.9).
+     *
+     * Pending orders are cancelled rather than left resting: an order that filled
+     * after the account had been locked would create exposure the rules had just
+     * removed.
+     */
+    private fun flattenAll(atUtcMs: Long, reason: CloseReason): List<ClosedTrade> {
+        val closed = mutableListOf<ClosedTrade>()
+        for (position in state.openPositions.toList()) {
+            liquidate(position, atUtcMs, reason)?.let { closed += it }
+        }
+        state = state.copy(
+            orders = state.orders.map {
+                if (it.isPending) it.copy(
+                    status = OrderStatus.CANCELLED,
+                    resolvedAtSimUtcMs = atUtcMs,
+                ) else {
+                    it
+                }
+            },
+        )
+        return closed
+    }
+
+    /**
+     * Closes a whole position at market for risk reasons, returning the trade.
+     *
+     * Unlike a user close, a liquidation has no requested price, so the fill is at
+     * the current exit-side price with adverse slippage: a broker liquidating a
+     * position takes it at whatever the market offers. The commission is the exit
+     * side only, because the entry side was charged when the position opened.
+     */
+    private fun liquidate(
+        position: Position,
+        atUtcMs: Long,
+        reason: CloseReason,
+    ): ClosedTrade? {
+        val bid = window.priceAt(atUtcMs) ?: return null
+        val quote = Quote(
+            bid,
+            SpreadModel.spreadUnitsFor(atUtcMs, context.newsReleaseTimesUtcMs),
+        )
+        val before = state.closedTrades.size
+        closePartially(
+            position = position,
+            closeVolumeHundredths = position.remainingVolumeHundredths,
+            quote = quote,
+            atSimUtcMs = atUtcMs,
+            reason = reason,
+            inGap = window.gapContaining(atUtcMs) != null,
+        )
+        return state.closedTrades.getOrNull(before)
     }
 
     companion object {

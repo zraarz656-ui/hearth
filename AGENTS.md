@@ -1706,6 +1706,71 @@ through the engine.
 ### Phase 6 owns margin, equity enforcement and stop-out
 
 `TradingState.balanceMicros` moves only by realised PnL and commission.
-`AccountState.equityMicros` is computed and never acted on. A replay can
-currently carry a position past the point a real account would be liquidated;
-that is expected until Steps 6.5-6.9 exist. Do not add a stop-out here.
+Equity enforcement lives in the risk policy, not in the engine's fill paths —
+see the Phase 6 section below, which supersedes this note.
+
+## Phase 6 — ACCOUNTING, MARGIN, RISK: HARD RULES (2026-10-21)
+
+### The engine cannot import `core.risk`
+
+`core.risk` depends on `core.trading` for `Position`, `ContractSpec` and the
+money helpers. The engine therefore calls risk through the `RiskPolicy` port in
+`core.trading/RiskPort.kt`, and the implementation lives in `core.risk`. Adding
+an engine import of `core.risk` would close the cycle. Position-level arithmetic
+that both sides need lives in `core.trading/MarginMath.kt` for the same reason:
+arithmetic in `trading`, thresholds in `risk`.
+
+### Risk runs last in the segment, and the engine re-asks after each liquidation
+
+`processSegment` runs pending orders, exits, protective rules, then
+`evaluateRisk`. Risk last means it sees the balance this segment actually
+produced. A stop-out closes one position, then re-evaluates and closes again,
+so "repeat until the margin level is restored" (Step 6.8) falls out of
+re-evaluation. Do not collapse that into a single loop that closes everything.
+
+### `RiskSnapshot.atSimUtcMs` is the segment end, not `processedToSimUtcMs`
+
+The policy derives the trading day from `atSimUtcMs`. Passing the state's
+processed time would point at the segment start and roll the day one segment
+late. `evaluateRisk` passes `toUtcMs` deliberately.
+
+### A locked day blocks exposure, not exits
+
+`RejectionReason.TRADING_DAY_LOCKED` applies only to `PlaceOrder`. Closes,
+cancels and modifications still go through, because a loss limit that also
+trapped the user in the position would be worse than no limit. A failed
+challenge blocks everything with `CHALLENGE_FAILED`.
+
+### Zero used margin means a null margin level, not zero or infinity
+
+`MarginMath.marginLevelPercent` returns `null` when nothing is open. Returning
+zero would trip the warning and the stop-out with no position; returning
+infinity would mean a `Long` sentinel. Every comparison against a level must
+handle the null.
+
+### The daily floor strikes once per day
+
+A day already locked does not record a second strike, or one bad day would
+exhaust the three-strike allowance by itself. Strikes accumulate *across* days;
+the day lock clears at the 17:00 New York rollover, the strike count does not.
+
+### The static floor is checked before the daily floor
+
+At $9,000 the challenge has failed outright, which is terminal. Testing the
+daily floor first would report a mere day lock for an account that had actually
+failed. Failure is also the one state a rollover does not clear.
+
+### Position sizing rounds down, and refuses rather than rounds up
+
+`PositionSizing.size` returns `TooSmall` when the budget cannot cover the
+minimum size. Rounding up to something tradable would exceed the stated risk,
+which is the one thing Step 6.11 forbids. `roundedDown` is true when the
+division left a remainder *or* the lot step cut further — testing the integer
+division against the stepped value alone can never detect the remainder.
+
+### Risk tests must widen the limits they are not testing
+
+With the real 3% daily limit, a position large enough to approach a stop-out
+breaches the daily floor first and is flattened before the stop-out is visible.
+Tests that target one rule pass a `RiskLimits` widening the others, with the
+reason stated. The plan's figures are the defaults, not the only values.

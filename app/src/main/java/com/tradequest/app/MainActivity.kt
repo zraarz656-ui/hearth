@@ -65,6 +65,7 @@ private fun TradeQuestApp(container: AppContainer) {
             TradeQuestNavHost(
                 navController = navController,
                 marketRepository = container.marketRepository,
+                sessionSource = container.tradingSessionSource,
                 modifier = Modifier.padding(padding),
             )
         }

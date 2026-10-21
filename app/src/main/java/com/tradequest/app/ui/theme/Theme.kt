@@ -8,6 +8,19 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import com.tradequest.app.core.chart.renderer.ChartStyle
+
+/**
+ * Builds the chart's colours and measurements from the active theme.
+ *
+ * # Why this lives in `ui.theme` and not in the chart
+ *
+ * The chart is drawn by `Canvas`, which cannot read `MaterialTheme`. The screen
+ * resolves the theme here, once per composition, and passes the result down. That
+ * keeps `core.chart` free of any Compose theme dependency while still honouring
+ * the Dark, Light, OLED and colour-blind modes.
+ */
+
 
 /**
  * Chart-facing colour tokens exposed through composition so the Canvas renderer
@@ -84,4 +97,39 @@ fun TradeQuestTheme(
             content = content,
         )
     }
+}
+
+fun chartStyleFor(mode: ThemeMode, darkTheme: Boolean = mode.isDark): ChartStyle {
+    val chart = chartColorsFor(mode)
+    val grid = if (darkTheme) Color(0xFF2A3038) else Color(0xFFD8DCE0)
+    val axis = if (darkTheme) Color(0xFF3A4149) else Color(0xFFB8BEC4)
+    val text = if (darkTheme) Color(0xFFB0B8C0) else Color(0xFF5A6068)
+    val background = when (mode) {
+        ThemeMode.OLED -> OledSurface
+        ThemeMode.LIGHT -> LightSurface
+        else -> DarkSurface
+    }
+
+    return ChartStyle(
+        bullish = chart.bullish,
+        bearish = chart.bearish,
+        doji = if (darkTheme) Color(0xFF9E9E9E) else Color(0xFF757575),
+        background = background,
+        gridLine = grid,
+        axisLine = axis,
+        axisText = text,
+        crosshair = if (darkTheme) Color(0xFFCCCCCC) else Color(0xFF404040),
+        currentPriceLine = GoldAccent,
+        asiaSession = chart.bullish.copy(alpha = 1f),
+        londonSession = BullishBlue.copy(alpha = 1f),
+        newYorkSession = GoldAccent.copy(alpha = 1f),
+        weekendBand = if (darkTheme) Color(0xFF6A7078) else Color(0xFFA0A6AC),
+        wickWidthPx = 1f,
+        gridWidthPx = 1f,
+        axisTextSizePx = 10f,
+        axisLabelPaddingPx = 4f,
+        minBodyHeightPx = 1f,
+        bodyWidthFraction = 0.7f,
+        sessionBandAlpha = 0.12f,
+    )
 }

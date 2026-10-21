@@ -14,11 +14,13 @@ import com.tradequest.app.feature.market.MarketLibraryScreen
 import com.tradequest.app.feature.news.NewsScreen
 import com.tradequest.app.feature.settings.SettingsScreen
 import com.tradequest.app.feature.trading.TradingScreen
+import com.tradequest.app.feature.trading.TradingSessionSource
 
 @Composable
 fun TradeQuestNavHost(
     navController: NavHostController,
     marketRepository: MarketRepository,
+    sessionSource: TradingSessionSource,
     modifier: Modifier = Modifier,
 ) {
     NavHost(
@@ -30,7 +32,9 @@ fun TradeQuestNavHost(
         composable(Destination.MARKET_LIBRARY.route) {
             MarketLibraryScreen(repository = marketRepository)
         }
-        composable(Destination.TRADING.route) { TradingScreen() }
+        composable(Destination.TRADING.route) {
+            TradingScreen(repository = marketRepository, sessionSource = sessionSource)
+        }
         composable(Destination.CHALLENGE.route) { ChallengeDashboardScreen() }
         composable(Destination.JOURNAL.route) { JournalScreen() }
         composable(Destination.NEWS.route) { NewsScreen() }

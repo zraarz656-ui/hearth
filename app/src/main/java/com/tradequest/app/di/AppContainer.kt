@@ -19,7 +19,12 @@ import com.tradequest.app.core.simulation.clock.SimulationClock
 import com.tradequest.app.core.simulation.clock.SystemMonotonicClock
 import com.tradequest.app.core.simulation.clock.SystemWallClock
 import com.tradequest.app.core.trading.TradingContext
+import com.tradequest.app.feature.trading.SeasonBinding
+import com.tradequest.app.feature.trading.TradingSessionSource
 import com.tradequest.app.platform.AndroidReplayNotifier
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 
 /**
  * Manual composition root for TradeQuest.
@@ -90,6 +95,65 @@ class AppContainer(
     }
 
     /**
+     * The chart's view of the running season (Step 8.10).
+     *
+     * # Why this is defined here rather than in the Trading feature
+     *
+     * It is the only place that knows both halves of the answer: the season, which
+     * lives in the player database, and the clock, which is process-scoped. The
+     * Trading feature sees only the [TradingSessionSource] interface, so it cannot
+     * reach a database or a season directly.
+     *
+     * # Why the instant is not read from the database
+     *
+     * `SimulationClock.currentSimUtcMs()` derives the instant from an in-memory
+     * anchor and the wall clock, so the per-frame read the chart performs costs no
+     * IO. Only [TradingSessionSource.currentSeason], which runs once, touches the
+     * database.
+     *
+     * # Why the ticker lives here
+     *
+     * The clock has no ticker, so [simInstants] provides one. It polls at a
+     * fixed cadence and emits only when the instant has actually moved, which
+     * keeps a paused clock from producing a stream of identical frames. Putting
+     * the loop here rather than in the ViewModel is what keeps the ViewModel
+     * testable — see the port's documentation.
+     */
+    val tradingSessionSource: TradingSessionSource by lazy {
+        object : TradingSessionSource {
+            override suspend fun currentSeason(): SeasonBinding? {
+                val season = playerRepository.activeSeason() ?: return null
+                return SeasonBinding(
+                    seasonId = season.seasonId,
+                    datasetId = season.datasetId,
+                )
+            }
+
+            override fun currentSimUtcMs(): Long? {
+                // A clock attached to a different season, or to none, has no
+                // instant for this chart.
+                if (!simulationClock.isAttached) return null
+                return simulationClock.currentSimUtcMs()
+            }
+
+            override fun simInstants(): Flow<Long> = flow {
+                var last: Long? = null
+                while (true) {
+                    val now = currentSimUtcMs()
+                    if (now == null) {
+                        // The season ended, so there is nothing left to follow.
+                        if (last != null) return@flow
+                    } else if (now != last) {
+                        last = now
+                        emit(now)
+                    }
+                    delay(CHART_TICK_INTERVAL_MS)
+                }
+            }
+        }
+    }
+
+    /**
      * Catches the active season up to wherever the simulation clock now stands
      * (Steps 7.7-7.8).
      *
@@ -149,5 +213,15 @@ class AppContainer(
     private companion object {
         /** The exclusive end of the dataset's last candle. */
         const val ONE_MINUTE_MS: Long = 60_000L
+
+        /**
+         * How often the chart looks for a new simulated instant.
+         *
+         * Four times a second. The forming candle's high and low move at the
+         * replay's own granularity, so a faster poll would only redraw identical
+         * frames — and the flow suppresses those anyway — while a slower one would
+         * visibly lag the clock.
+         */
+        const val CHART_TICK_INTERVAL_MS: Long = 250L
     }
 }

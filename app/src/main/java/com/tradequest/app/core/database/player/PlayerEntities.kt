@@ -539,3 +539,72 @@ data class SettingEntity(
     @ColumnInfo(name = "value")
     val value: String,
 )
+
+/**
+ * The resumable replay state of one season (Steps 7.3-7.4).
+ *
+ * # Why a separate table from `ReplayCheckpoint`
+ *
+ * `ReplayCheckpoint` holds the *clock* anchor — where simulated time is — and is
+ * written by `RoomClockStore`. This holds the *engine's* state — balance, orders,
+ * positions, executions, closed trades and the daily-loss bookkeeping — and is
+ * written by the replay processor. They are written at different moments by
+ * different components, and merging them would force the clock to rewrite the
+ * whole trading state on every pause.
+ *
+ * What Step 7.4 does require is that a *replay batch's* trading changes and its
+ * processed-time commit together, and those both live in this row: the state blob
+ * already contains `processedToSimUtcMs`. So one row is one atomic unit, and
+ * `RoomReplayStore` writes it inside a transaction.
+ *
+ * # Why the state is a blob rather than columns
+ *
+ * The engine's state is a deep, heterogeneous graph — orders with optional
+ * trailing-stop and breakeven sub-objects, positions with a dozen fields each,
+ * four separate collections. Normalising it would be dozens of columns and
+ * several tables, all of which would need a migration whenever a domain field
+ * changes, and all of which would have to be written atomically anyway. A single
+ * versioned blob keeps the schema stable and puts the format under
+ * `ReplayStateCodec`, where the version check lives.
+ *
+ * The state is bounded by construction: the engine caps the per-segment fill
+ * loops, and a season's executions and closed trades are what a user actually
+ * traded. It is not an unbounded log.
+ */
+@Entity(
+    tableName = "ReplayState",
+    foreignKeys = [
+        ForeignKey(
+            entity = SeasonEntity::class,
+            parentColumns = ["seasonId"],
+            childColumns = ["seasonId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+)
+data class ReplayStateEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "seasonId")
+    val seasonId: String,
+
+    /** The encoded [com.tradequest.app.core.trading.TradingState]. See `ReplayStateCodec`. */
+    @ColumnInfo(name = "stateJson")
+    val stateJson: String,
+
+    /**
+     * The simulated time this state has been processed up to.
+     *
+     * Duplicated out of the blob deliberately. It is the field a resume reads to
+     * decide how much work is owed, so having it as a column makes that check a
+     * query rather than a deserialisation, and lets a later phase index it.
+     */
+    @ColumnInfo(name = "processedToSimUtcMs")
+    val processedToSimUtcMs: Long,
+
+    /** The codec version the blob was written with. */
+    @ColumnInfo(name = "schemaVersion")
+    val schemaVersion: Int,
+
+    @ColumnInfo(name = "updatedAtRealUtcMs")
+    val updatedAtRealUtcMs: Long,
+)

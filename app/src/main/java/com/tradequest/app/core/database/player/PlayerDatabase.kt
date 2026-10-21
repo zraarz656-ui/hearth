@@ -26,9 +26,10 @@ import androidx.room.RoomDatabase
         TradeJournalEntity::class,
         BadgeEntity::class,
         ReplayCheckpointEntity::class,
+        ReplayStateEntity::class,
         SettingEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 abstract class PlayerDatabase : RoomDatabase() {
@@ -40,6 +41,7 @@ abstract class PlayerDatabase : RoomDatabase() {
 
         fun create(context: Context, name: String = NAME): PlayerDatabase =
             Room.databaseBuilder(context.applicationContext, PlayerDatabase::class.java, name)
+                .addMigrations(*PlayerMigrations.ALL)
                 .build()
     }
 }

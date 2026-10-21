@@ -38,6 +38,15 @@ android {
         compose = true
     }
 
+    sourceSets {
+        // Room's MigrationTestHelper reads the exported schema JSON through the
+        // target context's assets, which for a unit test are the debug variant's
+        // merged assets. Without this the helper throws FileNotFoundException and
+        // the migration is never actually verified. Scoped to `debug` so the
+        // schemas are not shipped in a release build.
+        getByName("debug").assets.srcDir("$projectDir/schemas")
+    }
+
     testOptions {
         unitTests {
             isIncludeAndroidResources = true
@@ -113,6 +122,9 @@ dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 
     testImplementation(libs.junit)
+    // Room migration-test harness: the supported way to assert a migration
+    // preserves data, validating against the exported app/schemas files.
+    testImplementation(libs.androidx.room.testing)
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.kotlinx.coroutines.test)

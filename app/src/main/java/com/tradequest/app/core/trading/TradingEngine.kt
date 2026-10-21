@@ -435,6 +435,49 @@ class TradingEngine(
     }
 
     /**
+     * The account as it stands, marked at [atSimUtcMs] (Step 7.7).
+     *
+     * # Why this is public
+     *
+     * The replay processor has to publish an account state that includes
+     * *unrealised* PnL, and only the engine holds the window that can price an
+     * open position. Recomputing equity outside would need a second copy of the
+     * marking rule — the same mark, the same spread, the same executable side —
+     * and two copies would eventually disagree. So the engine answers, and the
+     * processor publishes what it is given.
+     *
+     * A position whose instant has no price is marked at its entry price, which
+     * is the neutral choice the risk path already makes: it can neither invent a
+     * gain nor hide a loss.
+     */
+    fun accountAt(atSimUtcMs: Long): AccountState {
+        val marks = marksAt(atSimUtcMs)
+        val unrealized = MarginMath.totalUnrealizedPnl(
+            positions = state.openPositions,
+            markOf = { marks[it.positionId] ?: it.openPriceUnits },
+            contract = contract,
+        )
+        return AccountState(
+            seasonId = context.seasonId,
+            balanceMicros = state.balanceMicros,
+            unrealizedPnlMicros = unrealized,
+        )
+    }
+
+    /** Exit-side mark for every open position at [atSimUtcMs], by position id. */
+    private fun marksAt(atSimUtcMs: Long): Map<String, Int> {
+        val marks = mutableMapOf<String, Int>()
+        for (position in state.openPositions) {
+            val bid = window.priceAt(atSimUtcMs) ?: window.priceAt(state.processedToSimUtcMs)
+            if (bid != null) {
+                val spread = SpreadModel.spreadUnitsFor(atSimUtcMs, context.newsReleaseTimesUtcMs)
+                marks[position.positionId] = Quote(bid, spread).exitPriceUnits(position.side)
+            }
+        }
+        return marks
+    }
+
+    /**
      * The next instant after [cursor] at which something can change: a waypoint
      * of the containing candle, the start of the next candle, or the end of a gap.
      */

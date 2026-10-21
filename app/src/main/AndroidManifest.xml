@@ -1,7 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- No permissions are declared: TradeQuest is fully offline. -->
+    <!--
+      TradeQuest is fully offline: no INTERNET permission is declared, and none
+      may be added (AGENTS.md section 5, product rule 3.1).
+
+      POST_NOTIFICATIONS is a local permission for the system notification
+      service, needed from API 33 to show trade notifications (Step 7.9). It
+      grants no network or storage access, so it does not weaken the offline
+      promise. It is requested at runtime; the notifier checks it before posting,
+      because a denied permission makes a post a silent no-op.
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:name=".TradeQuestApplication"

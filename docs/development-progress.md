@@ -722,3 +722,157 @@ path, plus the money primitives in `core/accounting/`.
   candles for the case under test.
 - **Performance is unmeasured.** The walk is bounded by waypoint count per
   advance, which is adequate by inspection, but no throughput figure exists.
+
+---
+
+## Phase 7 — Replay processor and reliable persistence — COMPLETE
+
+Delivered `core/replay/` plus the persistence and platform pieces that make a
+catch-up survive a restart, and the WorkManager entry point that runs one in the
+background.
+
+### Implemented
+
+- **Replay processor (7.1-7.2).** `ReplayProcessor` drives the Phase 4 path and
+  the Phase 5/6 engine over the interval a season still owes, from the persisted
+  cursor to a target instant. Season-scoped, so the dataset, contract, commission
+  schedule and risk policy are fixed once at construction and a run cannot replay
+  one season's interval against another's data.
+- **Checkpoints (7.3).** `ReplayState` persists the whole resumable state —
+  cursor, orders, positions, executions, closed trades, balance and challenge
+  state — as one row keyed by season. `ReplayStateCodec` owns the on-disk format
+  as its own set of DTOs, separate from the domain models, so a domain rename
+  cannot silently change what an existing row means.
+- **Atomic transactions (7.4).** `ReplayStore.commit` is a single call, and the
+  Room implementation wraps it in a transaction. Exposing one call rather than
+  two makes "state advanced but cursor not" unrepresentable.
+- **Idempotency (7.5).** The engine refuses to re-process an instant it has
+  already walked, so a batch that was already committed is a no-op rather than a
+  duplicate. Notifications are held until after the commit that covers them.
+- **Batching (7.6).** One-minute batches by default, with progress emitted per
+  batch through `processAsFlow` so the UI can update during a catch-up.
+- **App resume (7.7).** `ReplayCoordinator` restores the state, reads the clock's
+  target, catches up, and commits the clock — in that order.
+- **WorkManager (7.8).** `ReplayCatchUpWorker` runs a best-effort 15-minute
+  periodic catch-up. The interval is a request, not a promise.
+- **Notifications (7.9).** `ReplayNotifications` maps engine events to text and
+  `AndroidReplayNotifier` posts them, gated on `POST_NOTIFICATIONS`.
+- **Tests (7.10).** 49 new tests across five suites.
+
+### Files created
+
+- `core/replay/ReplayProcessor.kt` (7.1-7.2, 7.6-7.7)
+- `core/replay/ReplayStateCodec.kt` (7.3) — the persisted shape
+- `core/replay/ReplayStore.kt` (7.3-7.4) — the port, plus `InMemoryReplayStore`
+- `core/replay/ReplayCoordinator.kt` (7.7)
+- `core/replay/ReplayNotifications.kt` (7.9)
+- `core/database/player/RoomReplayStore.kt` (7.3-7.4) — the Room adapter
+- `core/database/player/PlayerMigrations.kt` (7.3) — `MIGRATION_1_2`
+- `platform/AndroidReplayNotifier.kt` (7.9)
+- `platform/ReplayCatchUpWorker.kt` (7.8)
+- `res/drawable/ic_notification.xml` (7.9)
+- tests: `ReplayFixtures.kt`, `ReplayProcessorTest.kt`, `ReplayCoordinatorTest.kt`,
+  `ReplayNotificationsTest.kt`, `PlayerMigrationTest.kt`, `RoomReplayStoreTest.kt`
+
+### Files modified
+
+- `core/database/player/PlayerDatabase.kt` — `ReplayState` entity, version 1 to 2,
+  migrations wired.
+- `core/database/player/PlayerEntities.kt` — `ReplayStateEntity`.
+- `core/database/player/PlayerDao.kt` — replay state upsert/read/count/delete.
+- `core/trading/TradingEngine.kt` — exposes the state the processor checkpoints.
+- `di/AppContainer.kt`, `TradeQuestApplication.kt` — wiring and worker enqueue.
+- `app/build.gradle.kts`, `gradle/libs.versions.toml` — `room-testing`, and the
+  schema directory added to the debug assets so `MigrationTestHelper` can read it.
+- `AndroidManifest.xml`, `strings.xml` — notification permission and strings.
+- `app/schemas/.../2.json` — the exported schema the migration is verified against.
+
+### Decisions worth recording
+
+- **The coordinator commits the clock after the replay, never before.** Committing
+  first would tell the clock the pipeline had processed time it had not, and the
+  next resume would skip that interval. `ReplayCoordinatorTest` pins the order by
+  failing the replay mid-way and asserting the clock still owes time.
+- **The clock is committed to what was processed, not to what was asked for.** A
+  dataset that ends before the target stops the replay early; committing the
+  target would mark the shortfall as done and it would never be replayed.
+- **A missing checkpoint is not the same as an empty one.** Null means "never
+  processed" and seeds a fresh state at the dataset's first minute; a stored
+  state at the first minute means "processed nothing yet" and resumes there.
+- **The processor tests run against an in-memory store, and the Room store has
+  its own suite.** Driving the batch-boundary tests through SQLite would make
+  them test SQLite's timing; the one test that ties the two together replays the
+  same candles both ways and asserts the results match.
+- **`ReplayState` is a new table, so the migration is purely additive.** A season
+  created before this phase simply has no row, which is exactly "nothing
+  processed yet". No existing data is read or rewritten.
+- **The DDL is hand-written and verified against the exported schema.** Room
+  refuses to open a database whose schema does not match the entity, so a drift
+  between the two is caught at open time rather than by a silent data loss.
+- **Trailing stops, day rollovers and position openings do not notify.** A
+  trailing stop would otherwise notify on every segment, and a position opening
+  is already covered by its fill.
+
+### Bugs found by tests
+
+- **`WorkManager.isInitialized()` was the wrong guard.** It reports false until
+  WorkManager is first used in a process, so a real app would have skipped the
+  worker. Replaced with a try/catch around the enqueue, which is the actual
+  failure the guard was meant to catch.
+- **The processor's dataset-end clamp used the wrong bound.** `timeBounds`
+  returns the last candle's *start*, not an exclusive end, so clamping to it
+  dropped the final minute. The window already carries the true exclusive end,
+  and the clamp now uses that.
+- **The migration test failed for a reason unrelated to the migration.** Room's
+  `MigrationTestHelper` reads the exported schema through the *target context's*
+  assets, and the schema directory had been added to the `test` source set, which
+  unit tests do not use. It is now on `debug`, and scoped there so the schemas are
+  not shipped in a release build.
+- **The cascade assertion failed against a raw helper connection.** SQLite
+  disables foreign keys by default and Room enables them on its own connections;
+  the raw connection the helper hands back has not. The test now sets the pragma
+  explicitly, which makes it assert the declared cascade rather than SQLite's
+  default.
+- **Lint could not see the notification permission check.** It does not follow
+  the guard into a helper method, so it flagged a check that is present and is the
+  first thing the method does. Suppressed with a comment recording why, rather
+  than restructured to satisfy the analyser.
+- **`resumeAsFlow` committed the clock to the target rather than to what was
+  processed.** The one-shot `resume` clamped correctly, but the flow path had
+  its own copy of the commit and passed `reading.simUtcMs`. A catch-up the
+  dataset ended early would therefore mark the unprocessed remainder as done and
+  it would never be replayed — the exact failure the one-shot path was written to
+  avoid, duplicated in a second entry point. Caught by
+  `the flow form clamps the clock too when the dataset runs out`. The flow now
+  tracks the furthest committed batch and commits that.
+
+### Verification
+
+- `tests=563 failures=0 errors=0` (49 new in this phase; 514 before).
+- `:app:assembleDebug` succeeds.
+- `:app:lintDebug` reports 0 errors.
+- The merged manifest still declares no `android.permission.INTERNET`.
+
+### Unverified requirements
+
+- **The 15-minute catch-up interval is a request.** WorkManager batches and defers
+  periodic work, so a real device may run it less often. Step 7.8 says not to rely
+  on exact scheduling, and nothing here does — but no on-device timing has been
+  measured.
+- **No worker has run on a device.** `ReplayCatchUpWorker` is covered by the
+  guard logic and the coordinator it calls, not by a WorkManager integration test.
+- **Notification delivery has not been seen on a device.** The mapping and the
+  permission gate are tested; the posted notification is not.
+- **Notification body text is hardcoded English.** Only the channel name and
+  description are string resources. The plan does not specify localization, and
+  the notification text is assembled from engine values, so moving it to
+  resources would mean passing a `Context` into `ReplayNotifications` and losing
+  the pure-Kotlin testability it currently has. Flagged rather than silently
+  accepted: the app is not localizable as it stands.
+- **No real dataset has been replayed end to end.** Every test builds synthetic
+  candles.
+- **Nothing consumes `ReplayProgress` yet.** The flow emits per-batch progress,
+  but no screen observes it; Phase 8 onwards own the UI that will.
+- **A multi-day catch-up is tested only across a synthetic gap.** The plan's
+  "multi-day catch-up" is exercised as a several-hour gap, not a real weekend of
+  market closure.

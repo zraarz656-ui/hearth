@@ -35,4 +35,8 @@
     <string name="market_status_valid">Valid</string>
     <string name="market_status_warnings">Warnings</string>
     <string name="market_status_gaps">Gaps</string>
+
+    <!-- Trade notifications (Step 7.9) -->
+    <string name="notification_channel_trades">Trade activity</string>
+    <string name="notification_channel_trades_description">Fills, stop losses, take profits, margin warnings and challenge results.</string>
 </resources>

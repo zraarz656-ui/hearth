@@ -1106,31 +1106,78 @@ These facts were established by running the toolchain, not assumed.
 
 ## Installed toolchain
 
+**The container ships no JDK and no Android SDK.** `JAVA_HOME` and
+`ANDROID_HOME` are set as environment variables, but the paths they point to
+do not exist until you install them. Verified 2026-10-21: a fresh container
+had neither `/usr/lib/jvm/java-21-openjdk-amd64` nor `/opt/android-sdk`.
+Earlier revisions of this file claimed both were pre-installed, which was
+wrong.
+
+Install once per fresh container:
+
+```bash
+sudo apt-get update -qq
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y openjdk-21-jdk-headless unzip
+
+sudo mkdir -p /opt/android-sdk/cmdline-tools
+curl -sSL -o /tmp/cmdline.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+unzip -q /tmp/cmdline.zip -d /tmp/cmdtools
+sudo mv /tmp/cmdtools/cmdline-tools /opt/android-sdk/cmdline-tools/latest
+sudo chown -R "$(whoami)" /opt/android-sdk
+
+export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+export ANDROID_HOME=/opt/android-sdk
+export ANDROID_SDK_ROOT=/opt/android-sdk
+yes | /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses
+/opt/android-sdk/cmdline-tools/latest/bin/sdkmanager --install \
+  "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+```
+
+Resulting versions:
+
 | Tool | Version | Location |
 | --- | --- | --- |
 | JDK | 21.0.12 (Debian trixie has no JDK 17 package) | `/usr/lib/jvm/java-21-openjdk-amd64` |
-| Gradle | 8.14.3 (also 9.8.2 available at `/opt/gradle-9.8.2`) | `/opt/gradle` |
-| Android SDK | platform 36, build-tools 36.0.0, platform-tools 37.0.1 | `/opt/android-sdk` |
-| cmdline-tools | 19.0 | `/opt/android-sdk/cmdline-tools/latest` |
+| Gradle | 8.14.3, via the project wrapper | `./gradlew` |
+| Android SDK | platform 36, build-tools 36.0.0 | `/opt/android-sdk` |
+| cmdline-tools | 12.0 | `/opt/android-sdk/cmdline-tools/latest` |
 
-Source `/workspace/.tq_env` before any Gradle command:
-
-```bash
-source /workspace/.tq_env
-```
+`/workspace/.tq_env` exists but references `/opt/gradle`, which does not
+exist. Do not rely on it.
 
 `local.properties` contains `sdk.dir=/opt/android-sdk` and is git-ignored.
 
 ## Build commands
 
+Export the environment in the same command as the Gradle invocation; it does
+not reliably persist across sessions.
+
 ```bash
-./gradlew assembleDebug          # BUILD SUCCESSFUL
-./gradlew testDebugUnitTest      # 17 tests, 0 failures
-./gradlew lintDebug              # 0 errors, 20 version-currency warnings
+export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+export ANDROID_HOME=/opt/android-sdk
+export ANDROID_SDK_ROOT=/opt/android-sdk
+
+./gradlew --no-daemon :app:assembleDebug       # debug APK
+./gradlew --no-daemon :app:testDebugUnitTest   # 79 tests, 0 failures
+./gradlew --no-daemon :app:lintDebug           # 0 errors, 19 version-currency warnings
 ```
 
-Run long Gradle commands in the background and poll the log; the first build
-downloads dependencies and takes minutes.
+Use `--no-daemon`, and run long builds in the background with output to a
+log file, then poll the log. Foreground commands are killed by the
+container's idle timeout, and the first build downloads dependencies.
+
+APK output: `app/build/outputs/apk/debug/app-debug.apk`.
+
+`app/build/` is git-ignored, so an APK cannot be committed. To share one,
+upload it as a GitHub release asset. Note the upload host is
+`uploads.github.com`; the API host returns 404 for asset uploads:
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/vnd.android.package-archive" \
+  --data-binary @app/build/outputs/apk/debug/app-debug.apk \
+  "https://uploads.github.com/repos/zraarz656-ui/hearth/releases/$RELEASE_ID/assets?name=app-debug.apk"
+```
 
 ## Dependency compatibility (do not regress)
 
@@ -1161,14 +1208,18 @@ catalog. Do not guess versions.
 
 ## GitHub access
 
-The available `GITHUB_TOKEN` is a GitHub App installation token: it can READ
-public repositories and read metadata for installed ones, but it CANNOT write
-to any repository (`403 Resource not accessible by integration` on every repo
-tested) and cannot create repositories. `GITHUB_PUSH_TOKEN` is dead (401).
+`GITHUB_TOKEN` is a GitHub App installation token: it can READ public
+repositories and read metadata for installed ones, but it CANNOT write
+(`403 Resource not accessible by integration`) and cannot create
+repositories. `GITHUB_PUSH_TOKEN` is dead (401).
 
-Pushing requires a working token with `repo` scope, registered as an
-OpenHands secret and referenced as an environment variable. Never paste a token
-into the conversation and never write one into a file or a git remote URL.
+`GITHUB_PUSH_TOKEN` and `GITHUB_TOKEN` are managed secrets. To push, use a
+registered secret referenced as an environment variable. Never paste a token
+into the conversation and never write one into a file.
+
+Phase 1 was pushed with a `repo`-scoped PAT used only as a transient git
+remote URL, then the remote was reset to the plain HTTPS URL. A PAT in a
+remote URL is stored in `.git/config` in plaintext; reset it afterwards.
 
 ## Dukascopy dataset tooling (verified 2026-10-21)
 
@@ -1244,3 +1295,32 @@ high AND low of 100% of bars, and can flip a stop-loss trigger.
 5. **Conversions are exact.** Thousandths (1e-3) to micro-dollars (1e-6)
    is a multiply by 1000 — a power of ten, so no rounding ever occurs
    in that path. Rounding there means a scale is wrong.
+
+## Phase 1 — IMPLEMENTED (2026-10-21)
+
+`app/src/main/java/com/tradequest/app/core/market/` is implemented. See its
+`README.md` for the file map and the rules the package follows.
+
+- 79 unit tests, 0 failures. Phase 0 had 17; Phase 1 adds 62.
+- Lint: 0 errors, 0 issues in `core/market`.
+- The four ADR-0001 acceptance tests are in `PriceScaleTest.kt`.
+
+Traps specific to this package:
+
+1. **Never parse a price through `Double`.** Use `PriceParser`, which goes
+   through `BigDecimal`. `Double` injects binary error before the scaling
+   multiply.
+2. **Never fill a gap.** `CandleValidator` reports gaps; nothing may invent
+   candles. `AGENTS.md` forbids fabricated history.
+3. **Never infer a holiday from emptiness.** Measured: Christmas 2024
+   returned real ticks. `MarketClosureDetector` only excuses empty Saturday
+   and Sunday, and only when completely empty. Friday is deliberately NOT
+   excused despite its early close.
+4. **Padding rows are dropped, not stored.** Flat zero-volume rows are
+   Dukascopy padding for closed periods. A flat row WITH volume is real and
+   is kept.
+5. **The manifest hash covers canonical content only** (UTC epoch ms, prices
+   as fixed 3-decimal strings, volume). CSV column order, header layout,
+   timestamp format and locale must not change it.
+6. **`CsvImportConfig.sourceTimeZone` has no default** on purpose, so a
+   caller cannot silently assume UTC.

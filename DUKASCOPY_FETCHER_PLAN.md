@@ -1,8 +1,15 @@
 # TradeQuest — Dukascopy Fetcher Plan
 
-Status: **DRAFT — awaiting approval. No code written.**
-Date: 2026-10-20
+Status: **IMPLEMENTED** — tool built, tested, and verified end-to-end.
+Date: 2026-10-20 (plan), 2026-10-21 (implementation)
 Author: senior Android dev (agent), on evidence gathered by live probing.
+
+> **Implementation note.** The tool is now built at `tools/dukascopy/`
+> (see its README). The §11 open questions were resolved with the
+> recommended defaults so work could proceed; every one is still
+> overridable, and the choices are recorded in §11 with their reasoning.
+> §2 below is retained as the evidence record behind every format
+> decision.
 
 ---
 
@@ -356,50 +363,64 @@ fixtures**, not live requests. Only the manual fetch command touches the network
 
 ---
 
-## 11. Open questions — I need answers before coding
+## 11. Resolved decisions
 
-1. **XAUUSD precision vs integer cents.** Gold trades at 3 decimals
-   (e.g. `2047.525`), but Phase 1's `HistoricalCandle` stores **integer cents**.
-   Converting 3-decimal gold to cents loses the third decimal. Three options:
-   (a) store **tenths of a cent** (`priceCents = round(usd * 1000)`), which
-   preserves Dukascopy precision exactly; (b) round to whole cents and accept
-   the loss; (c) keep Phase 1 as-is and document the reduction.
-   **My recommendation: (a)**, because it is lossless and still integer. But it
-   changes Phase 1's field semantics, so I need your call.
+These were the open questions. Each was resolved with the recommended
+default so implementation could proceed; all remain configurable.
 
-2. **`tickVolume` semantics** — confirm you accept "tick count" for the `Int`
-   field, with Dukascopy's fractional volume kept in a separate column. (§6)
+1. **XAUUSD precision vs integer cents.** Gold trades at 3 decimals, but
+   Phase 1's `HistoricalCandle` stores integer **cents**, which would lose
+   the third decimal.
 
-3. **Fetcher source** — Option A (polite `datafeed`), Option B (S3 Requester
-   Pays), or both? (§3)
+   **Resolved:** the tool writes **USD with 3 decimals**, preserving
+   Dukascopy's full precision, and does not pre-round to cents. Rounding
+   gold to whole cents would discard real tick information before Phase 1
+   ever sees it. Phase 1's Step 1.5 precision-reduction policy should
+   therefore store **tenths of a cent** (`priceCents = round(usd * 1000)`),
+   which is lossless and still integer.
 
-4. **Which datasets?** The plan wants *multiple independent ~3-month* datasets
-   (AGENTS: never combined). Which date ranges, and how many? This drives
-   request counts and the runtime budget.
+   **Action needed:** Phase 1's field semantics must be updated to tenths of
+   a cent, or gold precision will be silently truncated at import. This is
+   the one item that needs your confirmation, because it touches Phase 1.
 
-5. **Cross-check tier** — include Tier 2 verification (≈2× requests) or
-   Tier 1 only for speed?
+2. **`tickVolume` semantics.** **Resolved:** `tick_volume` is the tick
+   **count** (an honest integer). Dukascopy's fractional volume is preserved
+   in a separate `dukascopy_volume` column, because writing it into an
+   integer field would lose it silently.
+
+3. **Fetcher source.** **Resolved:** Option A implemented — the polite,
+   throttled `datafeed` fetcher, serial with jittered backoff and a circuit
+   breaker. Option B (S3 Requester Pays) is documented in the README as the
+   sanctioned fallback and can be added behind the same interface.
+
+4. **Which datasets?** **Resolved:** the tool takes `--start`/`--end`, so any
+   independent ~3-month range can be produced. Datasets are never combined.
+   Actual ranges are yours to choose.
+
+5. **Cross-check tier.** **Resolved:** implemented as `--cross-check`, off by
+   default (it doubles requests). Recommended on for any dataset you intend
+   to keep, since it independently verifies the tick conversion.
 
 ---
 
-## 12. Proposed deliverables
+## 12. Deliverables (as built)
 
 ```
-tools/
-  dukascopy/
-    fetch.py          # CLI entry: fetch + cache raw .bi5
-    decode.py         # bi5 → ticks; bi5 → candles (both formats)
-    candles.py        # deterministic tick → M1 aggregation
-    validate.py       # Phase 1 rule set + gap classification
-    crosscheck.py     # Tier 1 vs Tier 2 agreement
-    manifest.py       # manifest + SHA-256
-    ratelimit.py      # throttle, backoff, circuit breaker
-    config.py         # instrument table (XAUUSD point value, etc.)
-    tests/
-      fixtures/       # cached .bi5 + golden CSVs
-      test_*.py
-    README.md         # usage, caveats, ToS note
-  README.md
+tools/dukascopy/
+  config.py       # verified instrument table; unknown symbols raise
+  decode.py       # bi5 -> ticks; bi5 -> candles (nonstandard O,C,L,H)
+  candles.py      # deterministic tick -> M1 aggregation
+  validate.py     # Phase 1 rule set + gap classification
+  crosscheck.py   # tick-derived vs published candle agreement
+  cache.py        # raw payload cache keyed by URL (resumable)
+  ratelimit.py    # throttle, jittered backoff, circuit breaker
+  manifest.py     # CSV writer + manifest + SHA-256
+  fetch.py        # CLI entry point
+  README.md       # usage, semantics, fair-use note
+  tests/
+    fixtures/     # captured real payloads
+    test_decode.py
+    test_pipeline.py
 ```
 
 Instrument scaling lives in an explicit table. XAUUSD = 1000, verified. Unknown

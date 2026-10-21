@@ -11,3 +11,9 @@ local.properties
 *.hprof
 /app/build/
 /app/release/
+
+# Generated datasets and raw payload cache (regenerate with tools/dukascopy)
+/datasets/
+tools/dukascopy/**/.cache/
+__pycache__/
+*.pyc

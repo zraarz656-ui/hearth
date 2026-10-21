@@ -1168,3 +1168,37 @@ tested) and cannot create repositories. `GITHUB_PUSH_TOKEN` is dead (401).
 Pushing requires a working token with `repo` scope, registered as an
 OpenHands secret and referenced as an environment variable. Never paste a token
 into the conversation and never write one into a file or a git remote URL.
+
+## Dukascopy dataset tooling (verified 2026-10-21)
+
+`tools/dukascopy/` is a standalone PC-side Python tool (stdlib only) that
+converts Dukascopy history into 1-minute CSV for the Phase 1 import. It is
+deliberately NOT part of the Android app: the app is offline-first and needs
+no INTERNET permission. Do not move this code into the app module.
+
+Three Dukascopy format facts that fail SILENTLY if wrong. Each has a test:
+
+1. Candle `.bi5` records are `O, C, L, H` (24 bytes), not the conventional
+   `O, H, L, C`. Decoding in the familiar order yields plausible but wrong
+   prices. `--cross-check` verifies against Dukascopy's own candle files.
+2. Candle files are padded to exactly 1440 rows. Closed periods are filled
+   with flat zero-volume rows; a full Saturday returns 1440 fabricated
+   candles. Drop rows where `volume == 0 and O == H == L == C`.
+3. XAUUSD point value is **1000**. Dukascopy's own published sample decoder
+   returns 100000 with NO warning for XAUUSD (it passes their
+   six-alphabetic-char sanity check), a silent 100x error. `config.py`
+   raises on any instrument without a verified scale.
+
+Operational facts:
+
+- Daily tick files (`YYYY/MM/DD_ticks.bi5`) = 1 request/day. Use them, not
+  hourly files (24x the requests). Month directory is ZERO-indexed.
+- The service throttles hard: 13 of 14 requests failed at 1s spacing, with
+  fast ~0.35s rejections. Keep serial requests with jittered backoff.
+- `200` + 0 bytes = market closed (not an error). `404` = out of range
+  (never retry). Holidays are NOT reliably empty (Christmas 2024 had data).
+- Raw payloads are cached by URL, so re-runs make zero network requests.
+- Tests run offline against `tools/dukascopy/tests/fixtures/`:
+  `python3 -m unittest discover -s tools/dukascopy/tests -t .`
+- Repo push requires a token with Contents write. The default `GITHUB_TOKEN`
+  secret is read-only for this repo (403); use a PAT or the GitHub App.

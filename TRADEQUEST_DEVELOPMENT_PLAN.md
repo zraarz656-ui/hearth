@@ -200,9 +200,25 @@ Resolve and document the following before implementing the trading engine.
 
 ## 4.1 Financial Units
 
+> ### ⚠ PRICE SCALE DECISION — DECIDED, DO NOT RE-OPEN
+>
+> **Prices are stored as integer THOUSANDTHS of a US dollar, not cents.**
+>
+> `PRICE_UNITS_PER_USD = 1000`. A price of `2047.204` is stored as
+> `2047204`. See `docs/adr-0001-price-scale.md` for the evidence.
+>
+> **Why:** XAUUSD quotes to three decimals. Measured over one real trading
+> day (174,586 price samples), the finest step present is 0.001 USD and
+> 20.3% of quotes are not representable as whole cents. Rounding to cents
+> moves the high and low of 100% of bars and can flip a stop-loss trigger.
+>
+> **This is settled.** Do not convert back to cents, do not add a
+> cents-based field, and do not "simplify" by dividing by 100 anywhere.
+> One scale, one constant, everywhere.
+
 Use:
 
-- Historical price: integer cents
+- Historical price: **integer thousandths of a USD** (`PRICE_UNITS_PER_USD = 1000`)
 - Lot quantity: integer hundredths of a lot
 - Account money: integer micro-dollars
 - Historical timestamp: UTC epoch milliseconds
@@ -211,7 +227,31 @@ Do not use Float or Double for authoritative accounting.
 
 Use checked arithmetic or safe intermediate representations where multiplication could overflow.
 
-Document rounding policies.
+**Overflow rule (verified, not theoretical).** Money magnitudes are
+independent of the price scale, and the plan's micro-dollar money scale
+already overflows Int32 on ordinary gold moves. Measured:
+
+```
+1 lot, a 30 USD gold move:
+  Int32 result = 3,000,000,000  -> EXCEEDS Int32_MAX (2,147,483,647)
+```
+
+The Int32 ceiling is reached after roughly a **21 USD move at 1 lot**, and
+gold routinely moves 20–40 USD per day. Therefore:
+
+- **All money arithmetic must use `Long` intermediates.** PnL, margin,
+  equity, and the notional product `priceUnits * quantity`.
+- Do not store money in `Int`, and do not do money multiplication in `Int`
+  and widen afterwards — the overflow happens during the multiply.
+- Keep `Int` only for the stored price itself (max ~2,050,000 in
+  thousandths, comfortably inside Int32).
+
+Use `Long` for anything that multiplies a price by a quantity.
+
+Document rounding policies. All conversions between thousandths and
+micro-dollars are powers of ten and therefore **exact** — there should be no
+rounding anywhere in that path. If you find yourself rounding there, a scale
+is wrong.
 
 ## 4.2 Price Simulation
 
@@ -411,11 +451,21 @@ HistoricalCandle
 Fields:
 
 - timestampUtcMs: Long
-- openCents: Int
-- highCents: Int
-- lowCents: Int
-- closeCents: Int
+- openUnits: Int
+- highUnits: Int
+- lowUnits: Int
+- closeUnits: Int
 - tickVolume: Int
+
+> **Scale:** the `*Units` fields are integer **thousandths of a USD**
+> (`PRICE_UNITS_PER_USD = 1000`). `2047.204` is stored as `2047204`.
+>
+> These were previously named `openCents` / `highCents` / `lowCents` /
+> `closeCents` and held whole cents. They were renamed because a field
+> named `*Cents` holding thousandths is a silent 10× bug waiting to happen.
+> See §4.1 and `docs/adr-0001-price-scale.md`.
+>
+> Do not reintroduce a `*Cents` field name anywhere.
 
 ## Step 1.2 — Import Pipeline
 
@@ -463,11 +513,46 @@ Require a documented source timezone.
 
 ## Step 1.5 — Price Conversion
 
-Convert prices to integer cents.
+Convert prices to **integer thousandths of a USD**.
 
-Define deterministic rounding.
+```kotlin
+/** Integer price units per US dollar. XAUUSD quotes to 3 decimals. */
+const val PRICE_UNITS_PER_USD = 1000
 
-If source prices have finer precision, record the precision reduction policy.
+fun usdToUnits(usd: String): Int = (BigDecimal(usd) * PRICE_UNITS_PER_USD).toInt()
+```
+
+**Deterministic rounding.** The Dukascopy CSV produced by
+`tools/dukascopy/` carries exactly 3 decimals, so conversion is **exact**
+and no rounding occurs. Parse the CSV column as decimal text, not as
+`Double`, so that no binary-float error is introduced before scaling.
+
+If a future source has finer precision than 0.001, round
+**half-up away from zero** at the 3rd decimal and record it. Do not round
+silently.
+
+**Precision reduction policy (required by this step):** none. There is no
+reduction — 3 decimals are preserved losslessly. This satisfies the
+requirement to record the policy.
+
+### Price units and pips
+
+The plan previously defined no pip or point size, while Steps 5.13 and
+6.11 refer to "Stop distance" and "Distance". Define it once, here:
+
+```kotlin
+/** One pip = 0.10 USD = 100 price units. */
+const val PRICE_UNITS_PER_PIP = 100
+```
+
+**Store every stop, target, and trailing-stop distance in PIPS, never in
+raw price units.** A distance expressed in raw units silently changes
+meaning if the storage scale is ever revised; a distance in pips does not.
+Convert to units only at the point of arithmetic:
+
+```kotlin
+val stopDistanceUnits = stopDistancePips * PRICE_UNITS_PER_PIP
+```
 
 ## Step 1.6 — Market Closure Detection
 
@@ -950,11 +1035,23 @@ Short exit: Ask.
 
 ## Step 5.6 — Spread Model
 
-Normal: $0.30
+Spread is defined in **USD** and converted to price units once, at the
+boundary. Do not scatter `1000` literals through the engine.
 
-Rollover: $0.60
+```kotlin
+val SPREAD_NORMAL_UNITS = 300    // $0.30 = 300 units
+val SPREAD_ROLLOVER_UNITS = 600  // $0.60
+val SPREAD_NEWS_UNITS = 800      // $0.80
+```
 
-High-impact news: $0.80
+Normal: $0.30 (300 units)
+
+Rollover: $0.60 (600 units)
+
+High-impact news: $0.80 (800 units)
+
+Ask = Bid + spread, computed in price units with `Long` intermediates if
+multiplied by size. Never in `Float`.
 
 Rollover window:
 
@@ -965,6 +1062,10 @@ High-impact news window:
 Release time +/- 5 minutes.
 
 Use the larger spread when windows overlap.
+
+> **Note:** the spread is small relative to the 0.001 price resolution
+> (0.30 USD = 300 units), so spreads were never the precision problem.
+> The precision problem is entry levels and stop placement. See §4.1.
 
 ## Step 5.7 — Commission
 
@@ -1077,6 +1178,28 @@ Micro-dollars stored as Long.
 Document conversions.
 
 Use checked arithmetic for multiplication.
+
+**Required: all money arithmetic uses `Long` intermediates.** This is not
+optional. The Int32 ceiling is reached after roughly a **21 USD move at
+1 lot**, and gold routinely moves 20–40 USD per day:
+
+```
+1 lot, a 30 USD gold move:
+  Int32 result = 3,000,000,000  -> EXCEEDS Int32_MAX (2,147,483,647)
+```
+
+Do not perform money multiplication in `Int` and widen afterwards — the
+overflow occurs during the multiply. Widen first.
+
+**Exact conversion.** Price thousandths (1e-3) to micro-dollars (1e-6) is a
+multiply by 1000. Both are powers of ten, so this is an exact integer
+operation with no rounding and no remainder:
+
+```
+2047.204 USD -> 2047204 units -> 2047204000 micro-dollars  (exact)
+```
+
+See §4.1 and `docs/adr-0001-price-scale.md`.
 
 ## Step 6.2 — Lot Representation
 
@@ -1369,9 +1492,16 @@ Use primitive arrays:
 - FloatArray closes
 - IntArray volumes
 
-Authoritative market data remains integer cents.
+Authoritative market data remains integer thousandths of a USD
+(`PRICE_UNITS_PER_USD = 1000`). See §4.1.
 
 Convert to chart-local coordinates for drawing.
+
+The `FloatArray` buffers are **for drawing only** and are never
+authoritative. Float32 represents every price in thousandths exactly
+(integers up to 2^24 = 16,777,216; prices peak near 2,050,000), so the
+conversion is lossless. Do not compute PnL, fills, or stops from these
+buffers — read the integer fields instead.
 
 ## Step 8.3 — Viewport
 
@@ -2427,6 +2557,18 @@ Never fabricate historical data.
 Never combine datasets.
 
 Never claim unverified performance.
+
+Never change the price storage scale. Prices are integer thousandths of a
+USD (`PRICE_UNITS_PER_USD = 1000`) — decided, see §4.1 and
+`docs/adr-0001-price-scale.md`. Do not convert to cents, do not divide by
+100, and do not introduce a `*Cents` field. If you believe the scale is
+wrong, stop and ask; do not change it silently.
+
+Never express a stop, target, or trailing-stop distance in raw price units.
+Use pips (`PRICE_UNITS_PER_PIP = 100`), per Step 1.5.
+
+Never perform money arithmetic in `Int`. Use `Long` intermediates, per
+Step 6.1.
 
 ---
 

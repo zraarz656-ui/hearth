@@ -12,7 +12,8 @@ The development plan specifies two things that conflict for gold:
 
 - **Step 1.1** — `HistoricalCandle` stores `openCents`, `highCents`,
   `lowCents`, `closeCents` as `Int`: prices in **integer cents** (2 decimals).
-- **Step 8.2** — "Authoritative market data remains integer cents."
+- **Step 8.2** — previously read *"Authoritative market data remains integer
+  cents."* (superseded by this ADR; see the phase table below).
 
 But XAUUSD on Dukascopy carries **three** decimals. Measured over one real
 trading day (2024-01-15, 87,293 ticks, 174,586 price samples):
@@ -154,7 +155,7 @@ is small and contained to Phase 1.
 | Phase | Touched? | What changes |
 | --- | --- | --- |
 | 1 (data) | **Yes** | Step 1.1 field names/types; Step 1.5 target scale. Step 1.5 already says *"If source prices have finer precision, record the precision reduction policy"* — this ADR **is** that policy. |
-| 2 (charts) | No | Step 8.2 says "authoritative market data remains integer cents"; becomes thousandths. Buffers are `FloatArray` for *drawing* only, and drawing tolerance is far coarser than 0.001. No functional change. |
+| 2 (charts) | No | Step 8.2 previously said "authoritative market data remains integer cents" — now updated to thousandths in the plan itself. Buffers are `FloatArray` for *drawing* only, and drawing tolerance is far coarser than 0.001. No functional change. |
 | 3 (market/session) | No | Works on timestamps and calendar logic. |
 | 4 (simulation) | **Yes** | Step 4.1 unit table. Step 4.5 threshold crossing and Step 5.13 trailing stops get **better** resolution. |
 | 5 (trading) | **Yes, positively** | Spread/slippage/stop arithmetic. Currently **no pip or point size is defined anywhere** in the plan (see below). |

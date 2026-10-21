@@ -630,9 +630,9 @@ Use fixed-point arithmetic.
 Recommended:
 
 
-- Price: integer cents
+- Price: integer thousandths of a USD (`PRICE_UNITS_PER_USD = 1000`)
 - Lot size: integer hundredths of a lot
-- Account accounting: integer micro-dollars
+- Account accounting: integer micro-dollars (`Long`)
 
 
 Document conversion and rounding rules.
@@ -641,7 +641,8 @@ Document conversion and rounding rules.
 Use Float only for graphical rendering coordinates.
 
 
-Prevent integer overflow.
+Prevent integer overflow. Money arithmetic requires `Long` intermediates
+(see the price scale section below).
 
 
 Test financial calculations thoroughly.
@@ -1202,3 +1203,44 @@ Operational facts:
   `python3 -m unittest discover -s tools/dukascopy/tests -t .`
 - Repo push requires a token with Contents write. The default `GITHUB_TOKEN`
   secret is read-only for this repo (403); use a PAT or the GitHub App.
+
+## PRICE SCALE — DECIDED, DO NOT CHANGE (2026-10-21)
+
+**XAUUSD prices are stored as integer THOUSANDTHS of a USD.**
+`PRICE_UNITS_PER_USD = 1000`. `2047.204` is stored as `2047204`.
+
+Full evidence: `docs/adr-0001-price-scale.md`. Plan sections: §4.1,
+Step 1.1, Step 1.5, Step 8.2.
+
+Do NOT:
+- convert to cents, divide by 100, or add a `*Cents` field
+- store prices as `Float`/`Double` (forbidden for authoritative accounting)
+- express stop/target/trailing distances in raw price units
+- do money arithmetic in `Int`
+
+Why thousandths: XAUUSD quotes to 3 decimals. Measured over one real day
+(174,586 price samples), the finest step present is 0.001 USD and 20.3% of
+quotes are not representable as whole cents. Rounding to cents moves the
+high AND low of 100% of bars, and can flip a stop-loss trigger.
+
+### Companion rules that go with it
+
+1. **Pips are the unit for distances.** `PRICE_UNITS_PER_PIP = 100`
+   (1 pip = 0.10 USD). Store every stop/target/trailing distance in PIPS.
+   The plan previously defined no pip size at all, which is a bigger bug
+   than the scale question: a distance in raw units silently rescales 10x
+   if the scale changes.
+2. **Money arithmetic uses `Long` intermediates.** Verified: at 1 lot a
+   30 USD gold move gives 3,000,000,000 micro-dollars, exceeding
+   Int32_MAX (2,147,483,647). The Int32 ceiling is hit after ~21 USD at
+   1 lot, and gold moves 20-40 USD/day. This is independent of the price
+   scale — it is the micro-dollar money scale, so cents does not avoid it.
+   Widen BEFORE multiplying, not after.
+3. **Stored price stays `Int`.** Max ~2,050,000 in thousandths, well
+   inside Int32. Only multiply results need `Long`.
+4. **Charts:** `FloatArray` buffers are drawing-only and never
+   authoritative. Float32 represents price-thousandths exactly
+   (integers to 2^24 = 16,777,216 vs prices near 2,050,000).
+5. **Conversions are exact.** Thousandths (1e-3) to micro-dollars (1e-6)
+   is a multiply by 1000 — a power of ten, so no rounding ever occurs
+   in that path. Rounding there means a scale is wrong.

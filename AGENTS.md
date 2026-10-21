@@ -1849,3 +1849,113 @@ is idle". A single `SharedFlow` emission is also dropped outright with
 call `selectTimeframe(Timeframe.M1)` and wait for a state whose `timeframe` is
 `M1`. On H1 the first bucket is still forming and the closed-bar buffer is
 legitimately empty.
+
+## DEBUG-ONLY DEVICE SCAFFOLDING — TEMPORARY (2026-10-21)
+
+Two debug-only facilities exist so Phase 8's chart can be exercised on a real
+device before Phase 15. **Both live in `app/src/debug/` and are compiled into
+debug builds only.** Neither is a Phase 8 deliverable, and both must be deleted
+— not extended — once Phase 15 provides the real import UI.
+
+### Why they exist at all
+
+Phase 1 can produce a validated CSV and Phase 2 can store one, but Step 15.1 is
+the only import entry point and Phase 15 is deliberately last. Until it lands,
+`market.db` is empty on a fresh install, so the Trading screen shows "No market
+data yet" and the Market Library shows its empty state. There is nothing to
+chart and therefore nothing to measure. The seeder closes that gap; the
+diagnostics make the measurement legible.
+
+### `DebugDatasetSeeder`
+
+Seeds `app/src/debug/assets/datasets/XAUUSD_2024-01-02_2024-01-22.csv` (20,548
+real Dukascopy 1-minute candles, Jan 2024) when `market.db` is empty. Never
+overwrites: it returns early if any dataset exists.
+
+It runs the **production pipeline** — `CsvImporter`, `CandleValidator`,
+`MarketClosureDetector`, `DatasetManifestFactory`, then
+`RoomMarketRepository.storeImport`. This is deliberate. A hand-built manifest
+could seed a dataset the real importer would reject, which would make any bug
+found on device unreproducible. Verified: `VALID_WITH_WARNINGS`, 0 errors,
+`importedSuccessfully=true`, `unexpectedEmptyDays=0`.
+
+The CSV was produced offline by `tools/dukascopy/` from the `.bi5` cache
+already in `datasets/.cache/`. Dukascopy itself is unreachable from this
+sandbox, so the seed range is capped at what is cached (Jan 1–23 2024).
+Regenerate with `--cache datasets/.cache`; without it the tool writes to
+`<out>/.cache` and hits the network.
+
+`seedIfEmpty` is fire-and-forget (it must not block `onCreate`), so the work
+lives in a separate `suspend fun seed` that a test can await.
+`DebugSeederRoomTest` in `app/src/testDebug/` drives it against an in-memory
+Room database and asserts 20,548 candles land with the expected dataset id, and
+that a second call is a no-op. That test is the only automated proof the seed
+path works end to end, so it stays until the seeder does. It runs the seed on
+`Dispatchers.IO` because under Robolectric the test thread is the main looper;
+disabling Room's main-thread check instead would have hidden a real bug class.
+
+### `DebugDiagnostics`
+
+Writes `tradequest-debug.log` to `getExternalFilesDir(null)`, and mirrors every
+line to logcat under `TradeQuestDiag`. Pull it with:
+
+```
+adb shell run-as com.tradequest.app cat /sdcard/Android/data/com.tradequest.app/files/tradequest-debug.log
+```
+
+Content: device header, seed result, and **real frame timing**. The frame
+monitor uses `Choreographer.postFrameCallback` and reports avg/p50/p95/p99/max
+intervals plus jank counts over a 300-frame window. This is the only way to get
+true frame delivery: `ChartRendererTest` runs through Robolectric's CPU
+rasteriser and can prove the renderer is not walking the whole series, but it
+cannot say anything about vsync on a GPU. The sample buffer is a pre-sized
+`LongArray` so monitoring does not allocate per frame and perturb its own
+measurement.
+
+File writes go through one daemon writer thread. `log` is called from the frame
+callback on the main thread, and appending to a file there would stall the main
+thread for the length of the write — a stall that lands inside the very samples
+being reported, inflating p99 and max with the cost of measuring. logcat is
+written synchronously first so a line survives a crash even if the writer has
+not drained.
+
+### The one seam in `main`
+
+`TradeQuestApplication` is `open` so `DebugTradeQuestApplication` can subclass
+it. That single keyword is the only change in shipping source. The debug
+manifest overrides `android:name`; the release manifest still points at
+`TradeQuestApplication`. Verified by dex inspection: `DebugDatasetSeeder`,
+`DebugDiagnostics` and `DebugTradeQuestApplication` appear in
+`app-debug.apk` and in **none** of the release APK's dex files, and the seed CSV
+is absent from the release APK.
+
+A runtime `BuildConfig.DEBUG` branch was rejected in favour of the debug source
+set: the source set cannot ship the code at all, whereas a flag still compiles
+it into release and leaves a seam for someone to flip by accident.
+
+### The chart observation hook
+
+`ChartDiagnosticsHook` in `main` is a single nullable lambda, invoked from
+`CandlestickChart`'s draw block and assigned only by the debug source set. It
+exists because the chart is composed from `main`, so no debug-only mechanism —
+subclassing, a manifest override, a debug source set — can reach it. A hook is
+the only seam available short of editing the chart.
+
+Null in release, so the shipping cost is one null check per frame. Verified: the
+release APK contains the hook class but no debug class, and never assigns the
+lambda. The hook reports the viewport *as drawn*, which is what pan/zoom
+diagnosis needs; it is dropped from the log when unchanged so a static chart does
+not flood the file.
+
+**When Phase 15 lands, delete the hook and this section.** If a permanent chart
+observability need appears, it should be designed as a real API then, not
+inherited from this debugging seam.
+
+### Reading the log
+
+`[frames]` lines are per 300-frame window. `jank` counts frames slower than 1.5x
+the window's own median, so the threshold adapts to the panel's refresh rate — a
+120 Hz device is judged against ~8.3 ms, not a fixed 16.7 ms that would hide
+real jank. `[chart]` lines appear only when the drawn viewport changes, so a pan
+or pinch produces a run of lines whose `visible=` and `first=` values show
+whether the gesture reached the renderer at all.

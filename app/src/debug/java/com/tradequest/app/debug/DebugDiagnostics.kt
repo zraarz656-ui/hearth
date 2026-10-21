@@ -43,6 +43,10 @@ internal object DebugDiagnostics {
     private const val TAG = "TradeQuestDiag"
     private const val FILE_NAME = "tradequest-debug.log"
 
+    /** Trim the log once it passes this size, keeping [KEEP_BYTES] of the tail. */
+    private const val MAX_BYTES = 512L * 1024L
+    private const val KEEP_BYTES = 256 * 1024
+
     /** Frames per summary block. At 60 Hz this is roughly every 5 seconds. */
     internal const val FRAME_WINDOW = 300
 
@@ -69,7 +73,7 @@ internal object DebugDiagnostics {
             Thread(runnable, "tradequest-debug-log").apply { isDaemon = true }
         }
 
-    /** Opens (or truncates) the log and writes the device header. Idempotent. */
+    /** Opens the log and writes the device header. Idempotent per process. */
     fun start(context: Context) {
         synchronized(lock) {
             if (started) return
@@ -79,14 +83,41 @@ internal object DebugDiagnostics {
             val file = File(dir, FILE_NAME)
             logFile = file
 
-            // Truncate on each launch: the previous run's numbers are not
-            // usually what is wanted, and the file stays small enough to paste.
-            file.writeText("")
+            // Appended, not truncated. Truncating here would wipe the log every
+            // time the process restarts — including when the tester taps the
+            // separate debug-log icon to *read* the log, which starts a fresh
+            // process if the app had been killed. A session marker separates runs
+            // instead, so the seed line from the first launch survives alongside
+            // the frame numbers from a later one. Trimming bounds the file.
+            trimIfOversized(file)
             Log.i(TAG, "diagnostics log: ${file.absolutePath}")
         }
-        log("session", "start")
+        log("session", "start (pid=${android.os.Process.myPid()})")
         logDevice(context)
         installFrameMonitor(context as Application)
+    }
+
+    /**
+     * Keeps the tail of the log when it grows past [MAX_BYTES].
+     *
+     * The frame monitor appends roughly a line every five seconds, so a long
+     * session on a real device would otherwise grow without bound. The tail is
+     * what matters: the newest frames and the most recent interaction.
+     */
+    private fun trimIfOversized(file: File) {
+        if (!file.exists() || file.length() <= MAX_BYTES) return
+        try {
+            val text = file.readText()
+            val tail = text.takeLast(KEEP_BYTES)
+            // Start at a line boundary so the first line is not a fragment.
+            val firstNewline = tail.indexOf('\n')
+            file.writeText(
+                "[trimmed: earlier log discarded]\n" +
+                    if (firstNewline >= 0) tail.substring(firstNewline + 1) else tail,
+            )
+        } catch (error: Exception) {
+            Log.w(TAG, "could not trim log", error)
+        }
     }
 
     /** Appends one timestamped line. Safe from any thread; never blocks the caller. */
@@ -100,6 +131,45 @@ internal object DebugDiagnostics {
                 logFile?.appendText(line)
             }
         }
+    }
+
+    /** Absolute path of the log file, shown on the debug log screen. */
+    fun logPath(): String = logFile?.absolutePath ?: "(diagnostics not started)"
+
+    /**
+     * The log file's current contents.
+     *
+     * The writer thread appends asynchronously, so a read that races an append
+     * may miss the last line or two. That is acceptable for a screen that
+     * refreshes once a second, and it is why the reader does not try to take the
+     * same lock — a read must never block the frame callback's enqueue.
+     */
+    fun readLog(): String {
+        val file = logFile ?: return "(diagnostics not started)"
+        return try {
+            when {
+                !file.exists() -> "Log file does not exist yet:\n${file.absolutePath}"
+                file.length() == 0L -> "(log is empty)"
+                else -> file.readText()
+            }
+        } catch (error: Exception) {
+            "Could not read log: ${error::class.java.name}: ${error.message}"
+        }
+    }
+
+    /** The log file, for sharing. Null until [start] has run. */
+    fun logFileOrNull(): File? = logFile
+
+    /** Truncates the log so a fresh capture starts from a known point. */
+    fun clear() {
+        val file = logFile ?: return
+        writer.execute {
+            synchronized(lock) {
+                file.writeText("")
+                lastChartState = null
+            }
+        }
+        log("session", "log cleared")
     }
 
     private fun timestamp(): String =

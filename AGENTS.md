@@ -1959,3 +1959,26 @@ the window's own median, so the threshold adapts to the panel's refresh rate —
 real jank. `[chart]` lines appear only when the drawn viewport changes, so a pan
 or pinch produces a run of lines whose `visible=` and `first=` values show
 whether the gesture reached the renderer at all.
+
+### Reading the log on the device, not over `adb`
+
+A second launcher icon, **TradeQuest Debug**, opens `DebugLogActivity` — a
+debug-only screen showing the log with Refresh / Copy / Share / Clear. It exists
+because `adb pull` assumes a desk; frame timing has to be captured on a phone in
+hand, and a file the tester cannot open is a file they cannot send.
+
+The screen refreshes once a second by default, since the frame monitor appends
+every few seconds and a frozen snapshot reads as "the log stopped".
+
+**The log is appended, never truncated.** An earlier version called
+`file.writeText("")` in `start()`, which was correct while the only reader was
+`adb`. It became a bug the moment the log had its own launcher icon: tapping that
+icon after Android had killed the process starts a fresh process, which would
+have wiped the log the tester was trying to read. `start()` now appends a
+`session start (pid=…)` marker and trims the file only when it passes 512 KB,
+keeping the newest 256 KB at a line boundary.
+
+**I could not visually verify this screen.** There is no device and no emulator
+in this environment (no `/dev/kvm`), so the layout, the button row wrapping on a
+narrow phone, and the toast behaviour are unconfirmed by me. Compilation, the
+manifest merge, and release isolation are verified; the pixels are not.

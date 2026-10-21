@@ -124,9 +124,13 @@ fun CandlestickChart(
             // Draw the plot in its own coordinate space by translating past the
             // price gutter, so the renderer works from the plot's top-left corner.
             translate(left = priceAxisPx, top = 0f) {
+                val drawn = latestState.copy(viewport = viewport)
+                // Debug-only observer; null in release. Reports the viewport as
+                // drawn, which is what pan/zoom debugging needs.
+                ChartDiagnosticsHook.onDraw?.invoke(drawn)
                 with(renderer) {
                     draw(
-                        state = latestState.copy(viewport = viewport),
+                        state = drawn,
                         plotWidthPx = plotWidthPx,
                         plotHeightPx = plotHeightPx,
                         priceAxisWidthPx = priceAxisPx,

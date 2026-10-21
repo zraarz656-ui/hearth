@@ -11,8 +11,12 @@ import com.tradequest.app.platform.ReplayCatchUpWorker
  * design: AGENTS.md section 4 requires that unnecessary third-party
  * dependencies are avoided, and Phase 0 has no graph complex enough to justify
  * a DI framework.
+ *
+ * `open` so the debug variant can subclass it to add dataset seeding and frame
+ * diagnostics (`app/src/debug/java/com/tradequest/app/debug/`). That code is
+ * compiled only into debug builds; the release manifest still points here.
  */
-class TradeQuestApplication : Application() {
+open class TradeQuestApplication : Application() {
 
     lateinit var container: AppContainer
         private set

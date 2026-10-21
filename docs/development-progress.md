@@ -488,8 +488,8 @@ challenge engine, news delivery or journal UI exists.
 
 ### Not started
 
-Phases 5 to 15. There is no order matching, chart rendering, challenge engine,
-news delivery or journal.
+Phases 6 to 15. There is no margin or stop-out enforcement, chart rendering,
+challenge engine, news delivery or journal.
 
 ---
 
@@ -584,3 +584,141 @@ chart and the trading engine, as product rule 2.4 requires.
 - **Performance is unmeasured.** `priceAt` is O(waypoints) and window lookup is
   O(log n), which is adequate by inspection, but no frame-rate or throughput
   figure has been taken on a device.
+
+---
+
+## Phase 5 — Trading execution engine — COMPLETE
+
+Delivered `core/trading/`: deterministic order execution against the Phase 4
+path, plus the money primitives in `core/accounting/`.
+
+### Implemented
+
+- **Domain models (5.1).** `TradeOrder`, `Execution`, `Position`, `ClosedTrade`,
+  `AccountState`, `TradingState`, `TradingCommand`, `CommandResult`,
+  `TradingEvent`. No Room annotations; Room entities stay persistence shapes.
+- **Order types (5.2).** Market buy/sell, buy/sell limit, buy/sell stop.
+  Market orders fill at once at the executable price for the side; pending
+  orders fill when their level is crossed.
+- **Position features (5.3).** Stop loss, take profit, trailing stop, breakeven,
+  partial close, full close, order modification, pending cancellation.
+- **Contract rules (5.4).** XAUUSD: 1 lot = 100 oz, minimum and increment
+  0.01 lots, leverage 1:100.
+- **Bid/ask (5.5).** Historical price is the bid; ask = bid + spread. A long
+  enters at the ask and exits at the bid; a short is the reverse.
+- **Spread model (5.6).** 300 units normal, 600 at rollover, 800 during news,
+  with the larger taken when the windows overlap.
+- **Commission (5.7).** $7 per lot round trip, charged per side, apportioned on
+  a partial close.
+- **Slippage (5.8).** Zero normally; 200–1,000 units adverse during news from a
+  seeded per-order hash. Zero for limit orders and for any gap fill.
+- **Event ordering (5.9).** Forward, segment-by-segment walk. Gaps, then pending
+  orders, then stops and targets, then protective rules.
+- **Same-candle execution (5.10).** An order can fill and its position can be
+  stopped out inside one minute, in that order. No look-back fills: a command
+  cannot be inserted before the processed time, and an order is never filled by
+  a crossing that preceded its placement.
+- **Gaps (5.11).** `GapExecution` — a stop-like trigger fills at the first price
+  available after the gap; a limit-like trigger fills at its own level.
+- **Partial close (5.12).** 50% supported where the remainder satisfies the lot
+  step; an impossible split is refused explicitly rather than rounded.
+- **Trailing stops (5.13).** Activation distance, distance, evaluated once per
+  path segment, ratchet-only, applied immediately at the segment's end.
+- **Tests (5.14).** 126 tests across four suites.
+
+### Files created
+
+- `core/accounting/MoneyMath.kt`
+- `core/trading/TradingTypes.kt`, `ContractSpec.kt`, `SpreadModel.kt`,
+  `SpreadTimeline.kt`, `SlippageModel.kt`, `OrderTrigger.kt`, `GapExecution.kt`,
+  `Modification.kt`, `TradingEngine.kt`, `README.md`
+- `core/trading` tests: `TradeFixtures.kt`, `PricingRulesTest.kt`,
+  `OrderExecutionTest.kt`, `PositionFeaturesTest.kt`, `GapExecutionTest.kt`
+
+### Files modified
+
+- `core/simulation/path/MarketPathWindow.kt` — added `bidRangeIn`.
+- `core/simulation/path/IntraminutePath.kt` — added `firstTouchInRange`.
+
+### Decisions worth recording
+
+- **The replay walk is forward and per-segment, not two-pass.** A fill and a
+  stop-out can happen in the same minute, so all fills cannot be resolved before
+  the stop checks. The engine takes the next segment, resolves what happens in
+  it, and moves on.
+- **Trailing stops are ratcheted after the exit check, not before.** Price is
+  monotonic between waypoints, so ratcheting first would move a long's stop up
+  to just under the segment's own end price and then immediately close the
+  position against that segment. Applying the trail afterwards means a new level
+  first applies from the next segment.
+- **Stops and targets are stored on the exit side.** A short exits at the ask,
+  so its stop is one spread higher in bid terms. Storing the raw level would
+  fire a short's stop one spread early and its target one spread late — the
+  latter in the user's favour.
+- **Gaps split triggers by which side the user is protected on.** A stop-like
+  trigger takes the post-gap price because the market moved against the user; a
+  limit-like trigger takes its own level because a resting order there was
+  genuinely crossed. This is the only split that is fair in both directions.
+- **A gap fill never slips.** The gap price already contains the adverse move.
+- **Commission is charged on entry and again on exit, never twice for one
+  fill.** The entry charge leaves the balance when the position opens; the close
+  adds gross PnL minus the exit charge only. The closed trade still reports the
+  full round-trip cost for the journal.
+
+### Bugs found by tests
+
+- **The balance double-charged entry commission.** `closePartially` added the
+  trade's net PnL to the balance, but that net already subtracted the apportioned
+  entry commission, which had been taken when the position opened. Caught by
+  `a round trip charges seven dollars per lot in total`, which saw a $35
+  discrepancy on 0.10 lots.
+- **A short's trailing extreme used the wrong sign.** The best exit-side price
+  for a short is the lowest ask, which is the lowest bid *plus* the spread; the
+  code subtracted it, putting the trail below the market. Caught by
+  `a short trailing stop uses the ask side`.
+- **`ModifyPosition` reset a trailed stop.** A `Keep` on the stop field
+  recomputed the level from the original distance, silently undoing every
+  ratchet. Caught by `removing a trailing stop leaves the current stop level in
+  place`. The `Keep` branch now leaves `activeStopUnits` untouched.
+- **`advanceTo` skipped a partial trailing range.** A segment was only processed
+  when a waypoint boundary fell strictly inside the advance, so an advance
+  smaller than the waypoint spacing evaluated nothing. Caught by
+  `advancing in smaller steps gives the same result as one large step`.
+- **The rollover spread window looked the wrong way.** `isInRolloverWindow`
+  compared against the *previous* trading day's start, so every instant in the
+  ten minutes *before* a rollover — the common case — was missed. Caught by
+  `ten minutes before rollover is still inside the window`. `SpreadTimeline` had
+  the same gap and was corrected with it.
+- **Five test expectations were wrong, not the code**, and were recomputed by
+  hand before anything was changed. The most instructive: a buy stop placed
+  *below* the market is already satisfied, so it fills at once rather than on a
+  later dip — a test that looked like it proved same-minute ordering actually
+  proved nothing until the stop was moved above the market.
+
+### Verification
+
+- `tests=458 failures=0 errors=0` (126 new in this phase; 332 before).
+- `:app:assembleDebug` succeeds.
+- `:app:lintDebug` reports 0 errors.
+- The merged manifest still declares no `android.permission.INTERNET`.
+
+### Unverified requirements
+
+- **Waypoint timing still decides which of a stop and a target is hit first.**
+  This phase inherits Phase 4's uniform quarter-minute spacing, so a same-candle
+  stop-versus-target race is a property of the model. It cannot be validated
+  against 1-minute OHLC.
+- **No swap or rollover financing is charged.** The plan gives no rate.
+  `TradingContext.swapMicrosPerLotPerDay` exists and defaults to zero, so the
+  omission is explicit and visible rather than buried.
+- **No real economic calendar backs the news spread.** Release instants are
+  supplied to the engine; none are imported. That is Phase 10.
+- **Slippage is modelled, not measured.** The 200–1,000 unit range is the plan's
+  figure. It is deterministic, but not calibrated against any real fill data.
+- **No margin, equity enforcement or stop-out.** `equityMicros` is computed and
+  never acted on. Steps 6.5–6.9 own that, so a replay can currently carry a
+  position past the point a real account would be liquidated.
+- **No real dataset has been replayed end to end.** Every test builds synthetic
+  candles for the case under test.
+- **Performance is unmeasured.** The walk is bounded by waypoint count per
+  advance, which is adequate by inspection, but no throughput figure exists.

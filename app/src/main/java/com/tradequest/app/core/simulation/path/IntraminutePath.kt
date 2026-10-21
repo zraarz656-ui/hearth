@@ -128,6 +128,19 @@ class IntraminutePath private constructor(
         firstTouchFrom(0, thresholdUnits)
 
     /**
+     * The earliest millisecond in `[fromElapsedMs, toElapsedMs)` at which the path
+     * reaches exactly [thresholdUnits], or null.
+     *
+     * Used by the execution engine, which must not resolve a trigger beyond the
+     * price it has already walked to: a trailing stop that saw a later price would
+     * be reading the future.
+     */
+    fun firstTouchInRange(fromElapsedMs: Int, toElapsedMs: Int, thresholdUnits: Int): Int? {
+        val found = firstTouchFrom(fromElapsedMs, thresholdUnits) ?: return null
+        return if (found < toElapsedMs) found else null
+    }
+
+    /**
      * The earliest millisecond at or after [fromElapsedMs] at which the path
      * reaches exactly [thresholdUnits], or null.
      *
@@ -187,6 +200,34 @@ class IntraminutePath private constructor(
      */
     fun touches(thresholdUnits: Int): Boolean =
         thresholdUnits in lowUnits..highUnits
+
+    /**
+     * The lowest and highest price on `[fromElapsedMs, toElapsedMs]`.
+     *
+     * Price is linear between waypoints, so an extreme over an interval is at a
+     * waypoint inside it or at one of its endpoints. Scanning those is therefore
+     * exact, not a sample — which matters because a trailing stop's best price
+     * must not be approximated.
+     */
+    fun priceRangeIn(fromElapsedMs: Int, toElapsedMs: Int): Pair<Int, Int> {
+        val from = fromElapsedMs.coerceIn(0, CANDLE_DURATION_MS.toInt())
+        val to = toElapsedMs.coerceIn(from, CANDLE_DURATION_MS.toInt())
+
+        var min = priceAt(from)
+        var max = min
+        for (waypoint in waypoints) {
+            if (waypoint.elapsedMs < from || waypoint.elapsedMs > to) continue
+            if (waypoint.priceUnits < min) min = waypoint.priceUnits
+            if (waypoint.priceUnits > max) max = waypoint.priceUnits
+        }
+        val end = priceAt(to)
+        if (end < min) min = end
+        if (end > max) max = end
+        return min to max
+    }
+
+    /** The waypoint times of this path, ascending. Used to split a minute into linear pieces. */
+    fun waypointTimes(): List<Int> = waypoints.map { it.elapsedMs }
 
     /** The segment index whose span contains [elapsedMs]; the last segment at the close. */
     private fun segmentContaining(elapsedMs: Int): Int {

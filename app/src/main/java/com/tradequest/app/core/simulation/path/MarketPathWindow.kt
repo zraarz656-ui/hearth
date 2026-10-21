@@ -107,6 +107,66 @@ class MarketPathWindow(
     fun priceAt(utcMs: Long): Int? = positionAt(utcMs).priceUnits
 
     /**
+     * The lowest and highest **bid** on `[fromUtcMs, toUtcMs]`, or null when the
+     * range contains no price at all.
+     *
+     * # Why this is not just a price range
+     *
+     * The execution engine uses this to track a trailing stop's favourable
+     * extreme, so it must see the extremes the path actually reached rather than
+     * a sample. Within a candle, price is linear between waypoints, so the
+     * extreme over an interval is at a waypoint inside it or at an endpoint —
+     * exact, not approximated (Step 5.13).
+     *
+     * # Gaps
+     *
+     * A gap contributes **no** bid. Every candle that exists inside the range
+     * contributes its real extremes, but the jump across a break contributes
+     * nothing: the prices on either side of it are real, while the movement
+     * between them never happened. Crediting a trailing stop with that jump
+     * would let it ratchet on progress the market never made.
+     */
+    fun bidRangeIn(fromUtcMs: Long, toUtcMs: Long): IntRange? {
+        if (toUtcMs <= fromUtcMs) return null
+
+        var min: Int? = null
+        var max: Int? = null
+        fun include(price: Int) {
+            val currentMin = min
+            val currentMax = max
+            min = if (currentMin == null) price else minOf(currentMin, price)
+            max = if (currentMax == null) price else maxOf(currentMax, price)
+        }
+
+        val startIndex = stepIndexContaining(fromUtcMs)
+            .let { if (it >= 0) it else stepIndexAtOrAfter(fromUtcMs) }
+
+        for (index in startIndex until steps.size) {
+            val path = steps[index].path
+            val candleStart = path.timestampUtcMs
+            if (candleStart >= toUtcMs) break
+
+            val fromElapsed = if (fromUtcMs > candleStart) {
+                (fromUtcMs - candleStart).toInt()
+            } else {
+                0
+            }
+            val toElapsed = if (toUtcMs < candleStart + CANDLE_DURATION_MS) {
+                (toUtcMs - candleStart).toInt()
+            } else {
+                CANDLE_DURATION_MS.toInt()
+            }
+            val range = path.priceRangeIn(fromElapsed, toElapsed)
+            include(range.first)
+            include(range.second)
+        }
+
+        val lower = min ?: return null
+        val upper = max ?: return null
+        return lower..upper
+    }
+
+    /**
      * The forming candle for the minute containing [utcMs] (Step 4.4).
      *
      * Returns null inside a gap or outside the window, because there is no
@@ -164,6 +224,18 @@ class MarketPathWindow(
         if (previous >= 0 && utcMs < startTimes[previous] + CANDLE_DURATION_MS) return previous
         return -1
     }
+
+    /**
+     * Index of the candle containing [utcMs], or -1.
+     *
+     * Exposed for the execution engine, which walks the path candle by candle
+     * and must start at the right one. Binary search, so a chart-scale window
+     * does not turn each lookup into a scan.
+     */
+    fun stepIndexContaining(utcMs: Long): Int = indexOfCandleContaining(utcMs)
+
+    /** Index of the first candle starting at or after [utcMs], or `steps.size`. */
+    fun stepIndexAtOrAfter(utcMs: Long): Int = insertionIndex(utcMs)
 
     /**
      * Index of the first candle starting at or after [utcMs], or `steps.size`.

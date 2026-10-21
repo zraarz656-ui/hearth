@@ -1629,3 +1629,83 @@ dataset.
 `MarketPathWindow` contains only the candles it was given. It has no repository
 access. Future information is not hidden from it; it is absent. Do not add a
 repository or a "load more" call to it.
+
+## Phase 5 — TRADING EXECUTION: HARD RULES (2026-10-21)
+
+### The replay walk is forward and per-segment. Never make it two-pass.
+
+`TradingEngine.advanceTo` walks the path segment by segment, and inside each
+segment does: gap, then pending orders, then stops and targets, then protective
+rules. Do not refactor this into "resolve every fill in the range, then run the
+risk checks". A position can be opened and stopped out inside one minute, so a
+two-pass engine will either report a closed position as open or close it against
+movement that preceded its entry.
+
+### Ratchet trailing stops after the exit check, not before
+
+Price is linear between waypoints, so a segment is monotonic and its extreme is
+at an endpoint. If the trail moved first, a rising segment would push a long's
+stop up to just under its own end price and the exit check would then find that
+stop *inside the segment that created it*, closing the position against a price
+it had only just reached. Applying the trail afterwards means a new level first
+applies from the next segment — the earliest instant it was genuinely in force.
+`applyProtectiveRules` is called after `applyExitTriggers` for this reason.
+
+### Stops and targets are stored on the exit side
+
+A long exits at the bid; a short exits at the **ask**. `stopLevelFor` and
+`targetLevelFor` return exit-side levels, and `TriggerDerivation` shifts them
+into bid triggers by the spread exactly once. Do not store a raw bid level for a
+short: its stop would fire one spread early and its target one spread late, and
+the second error flatters every short backtest.
+
+### A gap splits triggers by which side the user is protected on
+
+`GapExecution`: a **stop-like** trigger (stop order, stop-loss) fills at the
+first price available after the gap, because the market moved against the user.
+A **limit-like** trigger (limit order, take-profit) fills at its own level,
+because a resting order there was genuinely crossed. A gap fill never adds
+slippage — the gap price already contains the adverse move. Do not collapse this
+into one rule; either choice alone is unfair to one side.
+
+### Money is `Long` micro-dollars, with `Long` intermediates
+
+Every money value and every intermediate product is `Long`. A 32-bit
+intermediate overflows at about $21 on one lot, which is an ordinary day's move
+on gold. The plan's own example, $30 at 1 lot, is 3e9 micro-dollars and does not
+fit in `Int`. See `core/accounting/MoneyMath.kt`.
+
+### Commission is charged once per fill, and apportioned on a partial close
+
+The entry charge leaves the balance when the position opens. A close adds
+`gross - exitCommission` to the balance — **not** the trade's net PnL, which
+already subtracts the apportioned entry commission. Adding the net double-charges
+the entry side. The `ClosedTrade` still reports the full round-trip commission,
+because that is what the journal needs to show. This bug was real and was caught
+by a test; do not reintroduce it.
+
+### `Modification.Keep` must not recompute a level
+
+`ModifyPosition` only recomputes `activeStopUnits` / `targetUnits` for `Set` and
+`Clear`. Recomputing on `Keep` would reset a trailed stop to its original
+distance on any unrelated modification, silently undoing every ratchet.
+
+### No look-back fills
+
+A command earlier than `processedToSimUtcMs` is rejected, and an order's trigger
+search never starts before the order was placed. An order must not be filled by
+a crossing that happened before it existed. Keep both checks.
+
+### Distance is stored in pips, never in raw price units
+
+`PRICE_UNITS_PER_PIP = 100`, so 1 pip = 0.10 USD. Stops, targets and trailing
+distances are pips in the domain model and converted through
+`ContractSpec.pipsToUnits` at the boundary. Do not scatter price-unit literals
+through the engine.
+
+### Phase 6 owns margin, equity enforcement and stop-out
+
+`TradingState.balanceMicros` moves only by realised PnL and commission.
+`AccountState.equityMicros` is computed and never acted on. A replay can
+currently carry a position past the point a real account would be liquidated;
+that is expected until Steps 6.5-6.9 exist. Do not add a stop-out here.

@@ -1006,7 +1006,7 @@ STOP AFTER PHASE 4.
 
 ---
 
-# PHASE 5 — TRADING EXECUTION ENGINE
+# PHASE 5 — TRADING EXECUTION ENGINE — COMPLETE (2026-10-21)
 
 ## Objective
 
@@ -1193,6 +1193,49 @@ Test:
 - No look-back fills.
 - Same-candle event ordering is correct.
 - Tests pass.
+
+### Implementation record
+
+Delivered in `core/trading/` (with money primitives in `core/accounting/`):
+
+- `TradingTypes.kt` — `TradeOrder`, `Execution`, `Position`, `ClosedTrade`,
+  `AccountState`, `TradingState`, `TradingCommand`, `CommandResult`,
+  `TradingEvent`. Domain types only; no Room annotations.
+- `ContractSpec.kt` — XAUUSD contract rules (1 lot = 100 oz, min/step 0.01,
+  leverage 1:100) and pip conversion (`1 pip = 0.10 USD = 100 price units`).
+- `SpreadModel.kt` — 300 / 600 / 800 units for normal / rollover / news, with
+  the 17:00 NY +/-10 min and release +/-5 min windows, larger wins on overlap.
+- `SpreadTimeline.kt` — the instants at which the spread regime changes, so the
+  trigger search can split at each one.
+- `SlippageModel.kt` — zero normally, 200–1,000 units adverse during news, from
+  a seeded per-order hash; zero for limit orders and for any gap fill.
+- `OrderTrigger.kt` — pure bid-trigger derivation for all six order types and
+  for stops and targets, plus exit-side `stopLevelFor` / `targetLevelFor`.
+- `GapExecution.kt` — stop-like triggers fill at the post-gap price, limit-like
+  ones at their own level.
+- `Modification.kt` — `Keep` / `Set` / `Clear`.
+- `TradingEngine.kt` — commands, the forward segment-by-segment replay walk,
+  fills, partial close, trailing and breakeven ratchets.
+- `../accounting/MoneyMath.kt` — micro-dollar scale, `Long` PnL arithmetic.
+
+Verified: 458 tests, 0 failures (126 added by this phase; 332 before).
+`assembleDebug` and `lintDebug` green. No INTERNET permission.
+
+Known limitations, recorded rather than hidden:
+
+- **Waypoint timing is still an assumption.** Phase 4's uniform quarter-minute
+  spacing decides which of a stop and a target is hit first on a single candle.
+  That carries forward into every fill this phase produces.
+- **No swap/rollover financing is charged.** The plan specifies no rate, and
+  inventing one would fabricate a cost. `TradingContext.swapMicrosPerLotPerDay`
+  exists and defaults to zero.
+- **The spread regime has no calendar behind it.** Rollover and news windows are
+  computed from the trading calendar and a supplied release list; no real
+  economic calendar has been imported (Phase 10).
+- **No real dataset has been replayed.** Every test uses synthetic candles built
+  for the case under test.
+- **Slippage is modelled, not measured.** The 200–1,000 unit range is the plan's
+  figure, distributed deterministically; it is not calibrated to any data.
 
 STOP AFTER PHASE 5.
 

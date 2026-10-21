@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug-only manifest overlay.
+
+  Points the application class at the debug subclass so diagnostics and dataset
+  seeding run. Everything else is inherited from the main manifest, so the
+  release build is unaffected by this file existing.
+
+  `tools:replace` is required because the main manifest already declares
+  android:name; without it the merger reports a conflict rather than letting the
+  debug variant win.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        android:name=".debug.DebugTradeQuestApplication"
+        tools:replace="android:name" />
+
+</manifest>

@@ -224,6 +224,12 @@ interface PlayerDao {
     @Query("SELECT * FROM ReplayCheckpoint WHERE seasonId = :seasonId")
     suspend fun checkpoint(seasonId: String): ReplayCheckpointEntity?
 
+    @Query("DELETE FROM ReplayCheckpoint WHERE seasonId = :seasonId")
+    suspend fun deleteCheckpoint(seasonId: String): Int
+
+    @Query("SELECT COUNT(*) FROM ReplayCheckpoint WHERE seasonId = :seasonId")
+    suspend fun countCheckpoints(seasonId: String): Int
+
     // ---------- Settings ----------
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

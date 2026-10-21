@@ -2,7 +2,7 @@ TRADEQUEST — COMPLETE ANDROID DEVELOPMENT PLAN
 
 # TRADEQUEST — COMPLETE ANDROID DEVELOPMENT PLAN
 
-Version: 2.3
+Version: 2.4
 Project: TradeQuest
 Platform: Android
 Language: Kotlin
@@ -750,7 +750,13 @@ STOP AFTER PHASE 2.
 
 ---
 
-# PHASE 3 — SIMULATION CLOCK AND TRADING CALENDAR
+# PHASE 3 — SIMULATION CLOCK AND TRADING CALENDAR — COMPLETE (2026-10-21)
+
+> Implemented and verified. See `docs/development-progress.md` for the
+> implementation record, the two bugs found by tests, and the unverified list.
+> 97 tests added; suite at 253 passing, 0 failures (156 before). Lint clean for new code.
+> Both databases remain at schema version 1 — `ReplayCheckpoint` already
+> carried every field Step 3.5 required, so no migration was needed.
 
 ## Objective
 

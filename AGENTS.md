@@ -1464,3 +1464,99 @@ The CSV column names the tool writes (`timestamp_utc`, `open`, `high`, `low`,
 `close`, `tick_volume`, `spread`, `dukascopy_volume`) match the Kotlin defaults,
 and extra columns are ignored, so the default `CsvImportConfig` works as-is
 apart from `sourceTimeZone`, which has no default by design.
+
+---
+
+## Phase 3 — SIMULATION CLOCK: HARD RULES (2026-10-21)
+
+Phase 3 is implemented. These rules are now binding on every later phase.
+
+### Never let historical time move backwards
+
+`ClockMath.simTimeAt` treats a negative real interval as zero, and
+`SimulationClock` keeps a process-scoped high-water mark. Both are required:
+the pure function alone still returns to the anchor when the device clock is
+corrected backwards. The first implementation lacked the high-water mark and a
+test caught the rewind. Do not remove either.
+
+### The clock has no ticker, and must not gain one
+
+Historical time is derived from the anchor on every read, never stored and
+incremented. Do not add a coroutine ticker that mutates "current time": it will
+drift when the main thread is busy, lose time across a restart, and make every
+timing test flaky. If a later phase needs periodic work, it should read the
+clock, not drive it.
+
+### Re-anchor before changing speed, mode, or pause state
+
+`ClockAnchor.withSpeed`, `pausedAt` and `resumedAt` each move the anchor first.
+Skipping this retroactively rescales time already elapsed: switching to 60x
+after ten real minutes would credit ten hours. Any new control that changes the
+rate must re-anchor.
+
+### Challenge Mode is 1x, enforced in the clock
+
+`SimulationClock` clamps Challenge Mode to `PlaybackSpeed.X1` on both `attach`
+and `setSpeed`, so a stale or tampered stored speed cannot accelerate a
+challenge. Do not move this check to the UI.
+
+### Trading day convention: labelled by its close, rolls at 17:00 ET
+
+`tradingDateOf` returns the date the session *closes* on. The Sunday-evening
+open therefore belongs to Monday. Consequences to remember:
+
+- A trading day is `[previous day 17:00 ET, its own 17:00 ET)`.
+- The US spring-forward day is 23 hours long and the fall-back day is 25 hours,
+  and the transition falls inside the trading day **labelled with the
+  transition date**. Two Phase 3 tests were initially written one day off
+  because of this; do not repeat it.
+- 17:00 is chosen partly because US transitions happen at 02:00 local, so the
+  boundary always exists and is never ambiguous. A midnight boundary would be
+  both.
+
+### Sessions are defined in their own timezones, never as fixed UTC offsets
+
+The US and UK change clocks on different dates. During the mismatch weeks the
+London/New York overlap is **5 hours**, not 4. `SessionClassifier` holds each
+window in its own zone so `java.time` applies the right rule. A fixed-offset or
+single-ET table is wrong for those weeks every year.
+
+### Rules and observed closures are separate, and stay separate
+
+`NewYorkTradingCalendar` knows the weekly rules and cannot know holidays.
+`MarketClosureDetector` recorded what was actually absent at import time.
+`DatasetTradingCalendar` combines them. Do not add a hard-coded holiday table
+to the calendar, and do not treat every missing minute as a closure.
+
+### `ClockMode` is not `SeasonMode`
+
+They are separate enums mapped in exactly one place
+(`RoomClockStore.clockModeOf`). `SeasonMode` decides which rules apply;
+`ClockMode` decides how time advances. Do not merge them.
+
+### `ReplayCheckpoint` carries the clock state, and needed no migration
+
+Both databases remain at version 1. If a later phase needs another clock field,
+add it with a real migration and a migration test; do not drop and recreate.
+
+### The dataset endpoint is a hard stop
+
+`DatasetBounds` clamps every path — read, warp, seek, and restore. The
+simulation never advances into another dataset. `DatasetBoundsResolver` uses the
+**candle extent**, not manifest metadata, because the candles are what can
+actually be replayed.
+
+### Test expectations for calendar work must be computed, not assumed
+
+Every UTC constant in `NewYorkTradingCalendarTest` was computed independently
+from the IANA database before being written. Do the same for any new calendar
+test: an off-by-one-day DST expectation is exactly the bug this code exists to
+prevent, and a test derived from the implementation cannot catch it.
+
+### Fetching datasets is throttled, and not needed before Phase 15
+
+A Q1 2024 fetch reached 20 of 91 days in ~35 minutes before Dukascopy began
+returning HTTP 503 after five retries. The tool caches per-day `.bi5` files
+under `tools/dukascopy/.cache/`, so a later run resumes rather than restarting.
+Do not hammer the vendor. A dataset is not required until Phase 15; Phases 3-14
+are verified against synthetic fixtures and repository-level tests.

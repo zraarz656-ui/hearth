@@ -379,3 +379,114 @@ is a stronger guarantee than the test alone.
 
 Phases 3 to 14. No simulation, order matching, trading, chart rendering,
 challenge engine, news delivery or journal UI exists.
+
+---
+
+## Phase 3 — Simulation clock and trading calendar — COMPLETE
+
+### Implemented
+
+- `core/simulation/clock/TimeSource.kt` — `WallClock`, `MonotonicClock`,
+  `TestTimeSource`, plus system-backed implementations. Wall-clock, monotonic
+  and test time are three separate interfaces, as Step 3.1 requires.
+- `core/simulation/clock/ClockAnchor.kt` — `ClockAnchor` (the persisted
+  anchoring state), `ClockMode`, `PlaybackSpeed`, `DatasetBounds`,
+  `ClockReading`, `ClockStopReason`, and `ClockMath`.
+- `core/simulation/clock/SimulationClock.kt` — the authoritative clock:
+  read, pause, resume, setSpeed, advanceBySimMs, seekTo, commit, attach,
+  detach.
+- `core/simulation/clock/DatasetBoundsResolver.kt` — clock bounds from the
+  stored candle extent.
+- `core/simulation/calendar/NewYorkTradingCalendar.kt` — 17:00 ET rollover,
+  trading-day identification, weekly window, DST, and `SessionClassifier`.
+- `core/simulation/calendar/DatasetTradingCalendar.kt` — combines the calendar
+  rules with the closures observed in a dataset.
+- `core/database/player/RoomClockStore.kt` — `ClockStore` implemented against
+  `ReplayCheckpoint`.
+- `PlayerDao` — added `deleteCheckpoint` and `countCheckpoints`.
+- `di/AppContainer.kt` — `clockStore` and `simulationClock`.
+
+### Design decisions
+
+- **The clock has no ticker.** Historical time is a pure function of the anchor
+  and the real clock (`ClockMath.simTimeAt`). A background ticker would drift
+  when the main thread is busy and would lose time across a restart; a derived
+  value cannot do either. `ClockReading.pendingSimMs` reports how far historical
+  time has run ahead of what the pipeline has processed, which is what Step 3.3
+  needs after the app was closed.
+- **Historical time never moves backwards.** `ClockMath` treats a negative
+  elapsed interval as zero, and `SimulationClock` holds a process-scoped
+  high-water mark. This was not the first implementation: a test with a device
+  clock jumping backwards failed, because the pure derivation returned to the
+  anchor. The high-water mark was added in response.
+- **The anchor is two timestamps, not an offset.** Step 3.5 forbids relying on a
+  fixed seven-day offset. Storing both the historical and the real anchor means
+  any closed interval is measured rather than assumed, and a device-clock
+  correction moves both readings together.
+- **Speed changes re-anchor.** Switching from 1x to 60x after ten real minutes
+  must not retroactively credit ten hours. `ClockAnchor.withSpeed` re-anchors
+  first, and there is a test for exactly that.
+- **Challenge Mode is locked to 1x.** Enforced in `SimulationClock`, including
+  on restore, so a tampered or stale stored speed cannot accelerate a challenge.
+- **Sessions are defined in their own timezones.** The US and UK change clocks
+  on different dates, so for roughly two weeks each spring and autumn the
+  London/New York overlap is five hours rather than four. A fixed-offset table
+  is wrong for those weeks; the tests pin the mismatch week specifically.
+- **17:00 was chosen as the rollover partly because it is DST-safe.** US
+  transitions happen at 02:00 local, so a 17:00 boundary always exists and is
+  never ambiguous. A midnight boundary would be both on transition days.
+- **Rules and observed closures are kept separate.** `NewYorkTradingCalendar`
+  knows the rules and cannot know holidays; `MarketClosureDetector` recorded
+  what was actually absent at import time. `DatasetTradingCalendar` joins them
+  rather than letting either mask the other.
+- **The clock mode is not the season mode.** `ClockMode` governs how time
+  advances; `SeasonMode` governs which rules apply. They are separate enums
+  mapped in one place, so a future divergence cannot corrupt a restored clock.
+- **No migration.** `ReplayCheckpoint` already carried every field Step 3.5
+  needs, so the schema is unchanged and both databases stay at version 1.
+
+### Bugs found by tests
+
+- **A device clock moving backwards rewound the simulation.** The first
+  implementation derived historical time purely from the anchor, so a negative
+  interval returned the anchor and the simulation jumped back. Caught by
+  `a device clock jumping backwards does not rewind the simulation`. Fixed with
+  the high-water mark described above.
+- **Two of this phase's own test expectations were wrong, not the code.** The
+  spring-forward and fall-back trading days are 23 and 25 hours; the first draft
+  asserted this of the wrong dates. The US transition falls inside the trading
+  day *labelled* with the transition date, because that day runs from 17:00 the
+  previous day. Recomputed independently from the IANA database and corrected
+  the tests. Recorded here because it is exactly the kind of off-by-one-day
+  error the calendar exists to prevent.
+
+### Verification
+
+- `tests=253 failures=0 errors=0` (97 new in this phase; 156 before).
+- `:app:assembleDebug` succeeds.
+- `:app:lintDebug` reports 0 errors and 20 warnings, all pre-existing
+  (dependency-version notices and a launcher-icon hint). No warning is raised
+  against any file added in this phase.
+- The merged manifest still declares no `android.permission.INTERNET`.
+
+### Unverified requirements
+
+- **No Android device or emulator.** No claim is made about clock behaviour
+  under real process death, doze mode, or a device reboot. All testing is on the
+  JVM through Robolectric and plain JUnit.
+- **Process death is modelled, not experienced.** `SimulationClockTest` proves a
+  new `SimulationClock` over a persisted anchor recovers elapsed time. It does
+  not prove Android actually preserves the row before killing the process.
+- **No holiday calendar is asserted.** `DatasetTradingCalendar` reads closures
+  that a dataset stored; no dataset with holiday closures has been exercised end
+  to end, because no real dataset has been imported through the Kotlin path yet.
+- **Time Warp is not implemented.** `advanceBySimMs` and `nextMarketOpenUtcMs`
+  are the primitives Phase 12 will build on; the warp commands themselves are
+  not in this phase.
+- **Real-time drift under a long run.** Nothing measures whether a 60x practice
+  season holds its rate over hours of real use.
+
+### Not started
+
+Phases 4 to 15. There is no market path engine, order matching, chart rendering,
+challenge engine, news delivery or journal.

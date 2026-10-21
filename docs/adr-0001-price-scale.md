@@ -73,34 +73,41 @@ Rationale:
 - It removes the silent truncation that would otherwise happen at import,
   where nobody would notice until backtests disagreed with reality.
 
-## Consequence: the multiplication must widen to Long
+## Consequence: use Long for intermediate products
 
-This is the part that matters, and it is exactly the overflow the plan warns
-about in Step 4.1.
+Step 4.1 stores lot quantity as integer **hundredths of a lot**, so a
+notional product is `priceUnits * quantity`. At thousandths:
 
-Step 4.1 stores lot quantity as integer **hundredths of a lot**. So a
-notional product is `priceUnits * quantity`:
-
-| Price scale | `priceUnits` at 2050 USD | Overflow above |
+| Price scale | `priceUnits` at 2050 USD | Int32 notional limit |
 | --- | --- | --- |
 | cents (×100) | 205,000 | ~104.8 lots |
 | **thousandths (×1000)** | **2,050,000** | **~10.5 lots** |
 
-Switching to thousandths cuts safe headroom from ~105 lots to **~10.5 lots**
-if the product stays in `Int`. For a $10,000 account that ceiling is
-reachable (1 lot of gold is $205,000 notional, so 1:500 leverage permits
-~20 lots).
+So thousandths does reduce Int32 headroom on the raw notional product.
+Use `Long` for that product; the ceiling becomes ~4.5×10¹⁰ lots. Step 4.1
+already permits this ("safe intermediate representations").
 
-**Therefore the notional product must be computed in `Long` (Int64).** With
-a 64-bit intermediate the ceiling becomes ~4.5×10¹⁰ lots, which no personal
-simulator will approach. This is cheap, and Step 4.1 already permits it:
-"Use checked arithmetic or safe intermediate representations where
-multiplication could overflow."
+**Important correction.** An earlier draft of this ADR implied thousandths
+*introduces* overflow risk. That is wrong. Because PnL is a money quantity,
+its magnitude is independent of price storage scale: converting thousandths
+to micro-dollars multiplies by 1,000, converting cents multiplies by 10,000,
+and the delta is 10× smaller in thousandths — so the product is identical.
+Verified: a 30 USD gold move at 1 lot overflows Int32 under **both** scales,
+at the same threshold (21.47 USD for 1 lot):
+
+```
+cents      : delta_u= 3,000  Int32 result= 3,000,000,000  overflows
+thousandths: delta_u=30,000  Int32 result= 3,000,000,000  overflows
+```
+
+The micro-dollar money scale requires `Long` intermediates regardless of
+this decision. Cents does not avoid the overflow, it only hides it.
 
 Summary of the required pair:
 
-- **Store** price as `Int` thousandths of USD — safe, max 2,050,000.
-- **Multiply** `priceUnits * quantity` as `Long` — mandatory at this scale.
+- **Store** price as `Int` thousandths of USD — safe (max 2,050,000).
+- **Multiply** into `Long` — mandatory for money math either way, and for
+  the notional product at thousandths.
 
 ## Rejected alternatives
 
@@ -133,11 +140,43 @@ const val PRICE_UNITS_PER_USD = 1000
 
 Use one constant everywhere. Do not scatter `1000` or `100` literals.
 
-## Impact on the Dukascopy tool
+## Impact on the fetcher
 
 **None.** The fetcher already writes full 3-decimal USD
 (`2047.525`), deliberately without pre-rounding. The loss would occur at
 Phase 1 import, which is why this ADR exists. No tool change needed.
+
+## Phase-by-phase impact
+
+`grep -c` over the plan finds "cents" in only **6 places**. The blast radius
+is small and contained to Phase 1.
+
+| Phase | Touched? | What changes |
+| --- | --- | --- |
+| 1 (data) | **Yes** | Step 1.1 field names/types; Step 1.5 target scale. Step 1.5 already says *"If source prices have finer precision, record the precision reduction policy"* — this ADR **is** that policy. |
+| 2 (charts) | No | Step 8.2 says "authoritative market data remains integer cents"; becomes thousandths. Buffers are `FloatArray` for *drawing* only, and drawing tolerance is far coarser than 0.001. No functional change. |
+| 3 (market/session) | No | Works on timestamps and calendar logic. |
+| 4 (simulation) | **Yes** | Step 4.1 unit table. Step 4.5 threshold crossing and Step 5.13 trailing stops get **better** resolution. |
+| 5 (trading) | **Yes, positively** | Spread/slippage/stop arithmetic. Currently **no pip or point size is defined anywhere** in the plan (see below). |
+| 6 (PnL/accounting) | Minor | Money is already `Long` micro-dollars (Step 6.1). Add `Long` intermediates. Step 6.5 margin `price × 100 × lots / 100` — keep in `Long`. |
+| 7–12 | No | UI, replay, persistence, QA. Storage width is invisible to them. |
+
+## A gap this surfaced: no pip or point size is defined
+
+`grep -i "pip\|point value\|tick size"` over the plan returns **nothing**.
+The plan uses "Stop distance" (Steps 5.13, 6.11) and "Distance" without ever
+defining the unit.
+
+This matters more than the storage scale. If "distance" is read as a raw
+storage unit, then changing cents → thousandths **silently rescales every
+stop by 10×** — a 20-unit stop becomes 2.0 USD instead of 20 USD. That is a
+much larger error than the 0.001 rounding this ADR is about.
+
+**Required before Phase 5:** define pip/point size explicitly for XAUUSD.
+
+Recommendation: `1 pip = 0.10 USD = 100 storage units` at thousandths. Then
+store stop distances in **pips** (a stable semantic unit), never in raw
+storage units. Pips are immune to any future change in storage scale.
 
 ## Acceptance check for Phase 1
 

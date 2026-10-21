@@ -5,6 +5,7 @@ import androidx.compose.ui.Modifier
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import com.tradequest.app.core.market.MarketRepository
 import com.tradequest.app.feature.challenge.ChallengeDashboardScreen
 import com.tradequest.app.feature.history.HistoryScreen
 import com.tradequest.app.feature.home.HomeScreen
@@ -17,6 +18,7 @@ import com.tradequest.app.feature.trading.TradingScreen
 @Composable
 fun TradeQuestNavHost(
     navController: NavHostController,
+    marketRepository: MarketRepository,
     modifier: Modifier = Modifier,
 ) {
     NavHost(
@@ -25,7 +27,9 @@ fun TradeQuestNavHost(
         modifier = modifier,
     ) {
         composable(Destination.HOME.route) { HomeScreen() }
-        composable(Destination.MARKET_LIBRARY.route) { MarketLibraryScreen() }
+        composable(Destination.MARKET_LIBRARY.route) {
+            MarketLibraryScreen(repository = marketRepository)
+        }
         composable(Destination.TRADING.route) { TradingScreen() }
         composable(Destination.CHALLENGE.route) { ChallengeDashboardScreen() }
         composable(Destination.JOURNAL.route) { JournalScreen() }

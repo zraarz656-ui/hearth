@@ -15,6 +15,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.tradequest.app.di.AppContainer
 import com.tradequest.app.navigation.AdaptiveNavigationBar
 import com.tradequest.app.navigation.Destination
 import com.tradequest.app.navigation.TradeQuestNavHost
@@ -26,12 +27,13 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        setContent { TradeQuestApp() }
+        val container = (application as TradeQuestApplication).container
+        setContent { TradeQuestApp(container) }
     }
 }
 
 @Composable
-private fun TradeQuestApp() {
+private fun TradeQuestApp(container: AppContainer) {
     // Phase 0 keeps theme selection in memory. Persistence arrives with the
     // Settings table in Phase 2.
     var themeMode by rememberSaveable { mutableStateOf(ThemeMode.DARK) }
@@ -62,6 +64,7 @@ private fun TradeQuestApp() {
         ) { padding ->
             TradeQuestNavHost(
                 navController = navController,
+                marketRepository = container.marketRepository,
                 modifier = Modifier.padding(padding),
             )
         }

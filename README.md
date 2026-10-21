@@ -9,9 +9,10 @@ connection.
 
 ## Status
 
-**Phase 0 complete.** The project builds, navigates and themes. All feature
-screens are explicitly labelled placeholders; no trading, chart or simulation
-logic exists yet.
+**Phase 2 complete.** The project builds, navigates, themes, and persists.
+Two Room databases are implemented and tested: `market.db` for historical data
+and `tradequest.db` for player state. The Market Library screen lists imported
+datasets. No simulation, chart, trading or challenge logic exists yet.
 
 See `docs/development-progress.md` for the authoritative progress record.
 

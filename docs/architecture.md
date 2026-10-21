@@ -44,10 +44,14 @@ com.tradequest.app
 
 | Quantity | Representation | Example |
 | --- | --- | --- |
-| Price | integer cents (`Int`) | `$2,450.50` = `245050` |
+| Price | integer thousandths of a USD (`Int`) | `$2,450.505` = `2450505` |
 | Lot size | integer hundredths of a lot (`Int`) | `0.20` lots = `20` |
+| Distance (stop/target/trailing) | integer pips (`Int`), 1 pip = 0.10 USD | `50` pips = `5000` units |
 | Money | integer micro-dollars (`Long`) | `$10,000.00` = `10_000_000_000` |
 | Timestamp | UTC epoch milliseconds (`Long`) | |
+
+`PRICE_UNITS_PER_USD = 1000` and `PRICE_UNITS_PER_PIP = 100`. See
+`docs/adr-0001-price-scale.md`; the scale is decided and must not be reopened.
 
 `Float` and `Double` are permitted for rendering geometry and non-authoritative
 ratios only. They must never hold money, price, lot size, margin or PnL.

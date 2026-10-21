@@ -225,3 +225,157 @@ because they show the tests were checked against an independent source.
 
 Phases 2 to 14. No Room persistence, simulation, trading, chart, challenge,
 news or journal logic exists.
+
+---
+
+## Phase 2 — Persistence layer — COMPLETE
+
+### Implemented
+
+- `core/database/market/` — `market.db`, five entities: `MarketDataset`,
+  `Candle1m`, `NewsEvent`, `MarketClosure`, `DatasetValidation`.
+- `core/database/player/` — `tradequest.db`, twelve entities: `Season`,
+  `TradeOrder`, `Execution`, `Position`, `ClosedTrade`, `DailyStats`,
+  `EquitySnapshot`, `Drawing`, `TradeJournal`, `Badge`, `ReplayCheckpoint`,
+  `Settings`.
+- `core/database/market/WithoutRowid.kt` — stores `Candle1m` WITHOUT ROWID.
+- `core/market/MarketRepository.kt` — the read interface, dataset-scoped and
+  bounded.
+- `core/market/MarketReadModels.kt` — `DatasetSummary`, `NewsItem`,
+  `DatasetClosure`, `DatasetValidationInfo`.
+- `core/market/MarketFormat.kt` — date, span, count and size formatting.
+- `core/database/market/MarketMappers.kt` — entity/domain conversion, plus
+  `ImportRequest` and `ImportOutcome`.
+- `core/database/market/RoomMarketRepository.kt` — read access and
+  transactional import storage.
+- `core/database/player/PlayerRepository.kt` — season lifecycle, the
+  single-active-season rule, and dataset-existence enforcement.
+- `feature/market/MarketLibraryScreen.kt` and `MarketLibraryViewModel.kt` — the
+  Market Library, replacing the Phase 0 placeholder.
+- `di/AppContainer.kt` — both databases and both repositories, lazily.
+
+### Deliberate decisions
+
+- **Two databases, not one.** `market.db` is read-heavy, effectively immutable
+  and rebuildable from a CSV. `tradequest.db` is small, mutable and precious.
+  Separate files let player progress survive a market-data wipe and vice versa,
+  and keep a large candle table out of the same journal as player writes.
+- **`Season.datasetId` is a logical reference, not a foreign key.**
+  `docs/architecture.md` rule 6 forbids cross-database joins, so SQLite cannot
+  enforce it. `PlayerRepository.startSeason` refuses a season whose dataset does
+  not exist, and this is covered by test. The gap is real and is documented
+  rather than hidden.
+- **Money is `Long` micro-dollars; prices are `Int` thousandths; distances are
+  `Int` pips.** Three units, each named for its unit, so none can be mistaken
+  for another. `$10,000.00` is `10_000_000_000`.
+- **`Candle1m` is stored WITHOUT ROWID.** Room does not do this itself, as the
+  plan warned. With a rowid, the `(datasetId, timestampUtcMs)` primary key needs
+  a separate index, so every candle is stored twice. Measured on 94,000
+  realistic candles: 8,769,536 bytes with a rowid against 5,361,664 without, a
+  **38.9% saving**, at no measurable query cost (0.884 ms against 0.933 ms for a
+  1,000-candle range read). `WithoutRowid.apply` reads Room's own DDL back from
+  `sqlite_master` and appends only the `WITHOUT ROWID` keyword, so no schema is
+  duplicated; it runs in a transaction, is idempotent, and its failure is
+  non-fatal.
+- **Over-range reads throw; they are never truncated.** A silently truncated
+  candle series would render a chart with a missing tail and no visible error.
+  `candlesInRange` fetches one row past the budget and fails if it finds it.
+- **Import is idempotent on content, and refuses to overwrite.** The dataset id
+  derives from the content hash, so re-importing identical data is a no-op.
+  An existing id with *different* content returns `ContentMismatch` rather than
+  overwriting, because overwriting would corrupt any season replaying it.
+- **Import is one transaction.** A duplicate minute mid-import rolls the whole
+  import back, leaving no partial dataset. Covered by test.
+- **Per-dataset storage size is labelled an estimate.** SQLite's `dbstat`
+  reports bytes per table and index, never per row: its `path` column is the
+  B-tree path. A single dataset's share of the shared candle table therefore
+  cannot be read directly, so the summary divides total table bytes by total
+  candle count and the UI says "~".
+- **No delete action in the Market Library yet.** Deleting a dataset a season is
+  replaying must be refused, and that rule needs the Phase 3 season engine. The
+  repository method exists and is tested; the button does not, so nothing
+  half-implemented is exposed.
+- **`AppContainer` holds no placeholders.** Databases and repositories are real.
+  They are lazy so app start does not open either file, and are never closed
+  because they are process-scoped.
+
+### Verified by test
+
+`./gradlew testDebugUnitTest` — **156 tests, 0 failures, 0 errors, 0 skipped.**
+
+Phase 1 ended at 79 tests; Phase 2 adds 77. New classes:
+`MarketDatabaseTest` (34), `PlayerDatabaseTest` (23), `PlayerRepositoryTest` (8),
+`MarketLibraryViewModelTest` (7), and the pre-existing `MarketDatabaseSmokeTest`
+(5).
+
+Tests run against the real generated Room code and the real SQLite engine
+(3.44.3) on the JVM through Robolectric. **Nothing is mocked.**
+
+Coverage includes: inserts and round trips; exact thousandths price round trips
+including two values that are not representable as whole cents; the full `Int`
+range; half-open range queries; exact-minute lookup; time bounds; duplicate
+minute rejection; the same minute in two datasets being allowed; duplicate
+dataset ids; re-import idempotency; conflicting-content refusal; cross-dataset
+leak prevention for candles and news; foreign-key rejection of orphan rows;
+`RESTRICT` blocking deletion of a dataset with children; transactional deletion
+of a dataset and all children; data surviving close and reopen; Room
+re-validating its schema after the WITHOUT ROWID rewrite; the single-active-
+season rule; season history surviving; cascade deletion across all twelve player
+tables without touching another season; the dataset-existence check; active
+seasons refusing deletion; and the ViewModel's empty, loaded, selection and
+selection-fallback states.
+
+### Mutation-tested
+
+Passing tests prove nothing unless they can fail, so four deliberate
+regressions were injected and each was confirmed to fail the suite:
+
+| Injected regression | Result |
+| --- | --- |
+| Disable the WITHOUT ROWID rewrite | `candle table is stored WITHOUT ROWID` FAILED |
+| Remove the dataset scope from the candle range query | KSP build error, see below |
+| Remove the dataset-existence check | `a season cannot be created on a dataset that does not exist` FAILED |
+| Overwrite conflicting content instead of refusing | `same dataset id with different content is refused not overwritten` FAILED |
+
+The second result was unexpected and is a genuine finding: **Room fails the
+build when a query parameter is declared but unused** (`Unused parameter:
+datasetId`). Since every candle and news query takes a mandatory `datasetId`,
+this makes a cross-dataset read a compile error rather than a runtime bug. That
+is a stronger guarantee than the test alone.
+
+### Bugs found and fixed during Phase 2
+
+- **A per-dataset `dbstat` query that could never match.** My first
+  `candleStorageBytes` filtered on `path LIKE '%' || :datasetId || '%'`. Verified
+  against SQLite that `dbstat.path` is the B-tree path (`/` for a table root,
+  the index name for an index) and never contains row values, so the query would
+  always have returned NULL. Replaced with a total-bytes query and an explicitly
+  labelled estimate.
+- **A ViewModel selection that would not have updated the UI.** The first
+  `MarketLibraryViewModel` read `selectedId.value` inside a `map` over the
+  dataset flow, so changing the selection alone would not re-emit. Fixed by
+  `combine`-ing the two flows. The selection tests would have caught it.
+
+### Unverified requirements
+
+- **No Android device or emulator.** No rendering, gesture, frame-rate or
+  on-device database performance claim is made. All database testing is on the
+  JVM through Robolectric.
+- **No migration test.** Both databases are at version 1 with no migrations.
+  A destructive-migration or migration-test strategy is not yet chosen.
+- **`dbstat` availability on a real device.** Verified on Robolectric's SQLite
+  3.44.3 only. It is an optional SQLite module; the code treats its absence as
+  "size unavailable" rather than failing, but the real-device path is
+  unexercised.
+- **Real import performance.** No real Dukascopy file has been stored through
+  `RoomMarketRepository.storeImport`. The 94,000-candle storage measurement was
+  made with Python's `sqlite3`, not through the Kotlin path.
+- **`WithoutRowid` against a large non-empty table.** It only ever runs on the
+  empty table created at first open, so the row copy is trivial in practice, but
+  the non-empty path is untested.
+- **Lint.** Not re-run for Phase 2 in this session.
+
+### Not started
+
+Phases 3 to 14. No simulation, order matching, trading, chart rendering,
+challenge engine, news delivery or journal UI exists.

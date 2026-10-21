@@ -1324,3 +1324,51 @@ Traps specific to this package:
    timestamp format and locale must not change it.
 6. **`CsvImportConfig.sourceTimeZone` has no default** on purpose, so a
    caller cannot silently assume UTC.
+
+---
+
+## Phase 2 — IMPLEMENTED (2026-10-21)
+
+Two Room databases, the market read interface, the player season lifecycle, and
+the Market Library screen. **156 unit tests, 0 failures.** Tests run the real
+generated Room code against the real SQLite engine on the JVM via Robolectric —
+**no mocks**.
+
+- `core/database/market/` → `market.db`: `MarketDataset`, `Candle1m`,
+  `NewsEvent`, `MarketClosure`, `DatasetValidation`.
+- `core/database/player/` → `tradequest.db`: twelve tables from `Season` to
+  `Settings`.
+- `core/market/MarketRepository` is the only read surface. Its methods are
+  dataset-scoped and bounded; over-range reads throw rather than truncate.
+- `di/AppContainer` is the composition root and holds no placeholders.
+
+### Key finding: Room makes cross-dataset reads a compile error
+
+Room **fails the KSP build when a `@Query` parameter is declared but unused**
+(`Unused parameter: datasetId`). Every candle and news query takes a mandatory
+`datasetId`, so removing the dataset scope from a query does not silently leak
+another dataset's rows — it stops the build. Treat any query that stops using
+`datasetId` as a hard error, not a warning to suppress.
+
+### Traps specific to this package
+
+1. **Room does not emit `WITHOUT ROWID`.** `WithoutRowid.apply` reads Room's own
+   DDL from `sqlite_master` and appends only the keyword, in a transaction. It
+   must run at open, on the empty table, and its failure must stay non-fatal.
+   Measured 38.9% storage saving on 94,000 candles.
+2. **`dbstat.path` never contains row values.** It is the B-tree path (`/` for a
+   table root, the index name for an index). A per-dataset `LIKE` on it can
+   never match. Per-dataset byte counts are therefore unobtainable; report a
+   labelled estimate instead of pretending otherwise.
+3. **`Season.datasetId` is a logical reference, not a foreign key.** Two
+   databases cannot share one, and architecture rule 6 forbids cross-database
+   joins. `PlayerRepository` enforces existence in code; SQLite cannot.
+4. **Import refuses to overwrite.** Same dataset id with different content
+   returns `ContentMismatch`. Overwriting would corrupt a replaying season.
+   Import is a single transaction; a duplicate minute rolls the whole thing back.
+5. **Three units, three names.** Money `Long` micro-dollars, price `Int`
+   thousandths, distance `Int` pips. Never mix them, never name one after
+   another.
+6. **`tools/check_price_scale.py` now scans Kotlin too.** It rejects a
+   `*Cents` field, a division by 100 on the price path, and `Double`/`Float`
+   money fields. Verified by injecting each regression and confirming failure.

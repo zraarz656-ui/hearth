@@ -1137,15 +1137,16 @@ Resulting versions:
 
 | Tool | Version | Location |
 | --- | --- | --- |
-| JDK | 21.0.12 (Debian trixie has no JDK 17 package) | `/usr/lib/jvm/java-21-openjdk-amd64` |
+| JDK | 21.0.12 (Debian trixie has no JDK 17 package) | `/workspace/.toolchain/jdk-21.0.12.1+1` |
 | Gradle | 8.14.3, via the project wrapper | `./gradlew` |
-| Android SDK | platform 36, build-tools 36.0.0 | `/opt/android-sdk` |
-| cmdline-tools | 12.0 | `/opt/android-sdk/cmdline-tools/latest` |
+| Android SDK | platform 36, build-tools 36.0.0 | `/workspace/.toolchain/android-sdk` |
+| cmdline-tools | 12.0 | `/workspace/.toolchain/android-sdk/cmdline-tools/latest` |
 
 `/workspace/.tq_env` exists but references `/opt/gradle`, which does not
 exist. Do not rely on it.
 
-`local.properties` contains `sdk.dir=/opt/android-sdk` and is git-ignored.
+`local.properties` contains `sdk.dir=/workspace/.toolchain/android-sdk` and is
+git-ignored.
 
 ## Build commands
 
@@ -1153,18 +1154,27 @@ Export the environment in the same command as the Gradle invocation; it does
 not reliably persist across sessions.
 
 ```bash
-export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
-export ANDROID_HOME=/opt/android-sdk
-export ANDROID_SDK_ROOT=/opt/android-sdk
+export JAVA_HOME=/workspace/.toolchain/jdk-21.0.12.1+1
+export ANDROID_HOME=/workspace/.toolchain/android-sdk
+export ANDROID_SDK_ROOT=/workspace/.toolchain/android-sdk
 
 ./gradlew --no-daemon :app:assembleDebug       # debug APK
-./gradlew --no-daemon :app:testDebugUnitTest   # 79 tests, 0 failures
+./gradlew --no-daemon :app:testDebugUnitTest   # 773 tests, 0 failures (47 classes)
 ./gradlew --no-daemon :app:lintDebug           # 0 errors, 19 version-currency warnings
 ```
 
 Use `--no-daemon`, and run long builds in the background with output to a
 log file, then poll the log. Foreground commands are killed by the
 container's idle timeout, and the first build downloads dependencies.
+
+Run only `:app:testDebugUnitTest`. The bare `test` task also runs
+`:app:testReleaseUnitTest`, which fails for a pre-existing reason unrelated to
+any test logic: `PlayerMigrationTest` reads Room's exported schema JSON through
+the *debug* variant's merged assets, and `build.gradle.kts` wires
+`$projectDir/schemas` into `getByName("debug").assets` only — deliberately, so
+the schemas are not shipped in a release build. A release migration run
+therefore cannot find `1.json`/`2.json` and throws `FileNotFoundException`.
+Do not "fix" this by adding the schemas to the release source set.
 
 APK output: `app/build/outputs/apk/debug/app-debug.apk`.
 
@@ -1774,3 +1784,68 @@ With the real 3% daily limit, a position large enough to approach a stop-out
 breaches the daily floor first and is flattened before the stop-out is visible.
 Tests that target one rule pass a `RiskLimits` widening the others, with the
 reason stated. The plan's figures are the defaults, not the only values.
+
+## Phase 8 — LIVE CHART: HARD RULES (2026-10-21)
+
+### The clock is a flow, not a poll
+
+`TradingSessionSource.simInstants()` emits the simulated instant; the ViewModel
+collects it. This is not a style choice. `SimulationClock` has no ticker — it
+derives the instant from a stored anchor plus the wall clock — so *something*
+must poll it. If that poll is a `while (isActive) { delay(...) }` inside the
+ViewModel, every unit test hangs: a test scheduler never reaches idle while a
+`delay` is outstanding, so `advanceUntilIdle()` blocks forever and
+`runTest`'s own timeout is the only thing that stops it. Keeping the cadence
+behind the port leaves the ViewModel a pure consumer, which a test can feed one
+instant at a time. `AppContainer.tradingSessionSource` owns the real loop.
+
+### The forming candle's range is folded separately
+
+`CandleBuffer.highestHigh`/`lowestLow` do **not** clamp their arguments. Passing
+the forming candle's index (one past the last closed bar) throws.
+`ChartFrameAssembler` therefore computes the price range over the closed window
+and folds the forming candle's high and low in separately. `PriceAxisRange`
+needs `maxUnits > minUnits` and uses `minUnits`/`maxUnits`, not `low`/`high`.
+
+### A light republish must read the latest viewport, not the last frame's
+
+`refreshFormingCandle` runs on every tick that changes the forming candle. It
+must take the viewport from `lastViewport` (what the user last scrolled to) and
+only fall back to the published frame's viewport. Reading the frame's viewport
+snaps a pan back to the live edge on the next tick — the state's viewport is
+only refreshed when a frame is published, so any gesture since then is lost.
+Regression test: `a pan survives a tick that only moves the forming candle`.
+It needs ~20,000 minutes of history, because the live edge is at a negative
+index when the series is narrower than `barsVisible` (120), which makes the pan
+unobservable.
+
+### Test dispatchers must own every thread the screen touches
+
+Two traps, both of which present as "the state is still `Loading`":
+
+1. The ViewModel's `ioDispatcher`/`computeDispatcher` default to the real
+   `Dispatchers.IO`/`Default`. A test must inject its own dispatcher for both,
+   or the load finishes on a thread the scheduler cannot await.
+2. Room runs queries on its **own** executor, which the scheduler also does not
+   know about. Build the in-memory database with a direct executor:
+   `Room.inMemoryDatabaseBuilder(...).setQueryExecutor(Executor { it.run() })
+   .setTransactionExecutor(Executor { it.run() })`. `TestDispatcher.asExecutor()`
+   is **not** available in `kotlinx-coroutines-test` 1.10.2 — only
+   `TestDispatchers` and `TestDispatcher` exist — so the direct executor is the
+   way.
+
+### A fake clock's flow must be closeable
+
+Use a `Channel` + `receiveAsFlow()`, not a `MutableSharedFlow`. The real
+source's flow *completes* when the season ends, and only a channel can be
+closed to reproduce that. A `SharedFlow` that merely stops emitting leaves the
+collector alive, so a test cannot distinguish "the loop exited" from "the loop
+is idle". A single `SharedFlow` emission is also dropped outright with
+`replay = 0` if it lands before the collector subscribes.
+
+### The Trading screen opens on H1
+
+`TradingViewModel` defaults to hourly bars, so a test about a single minute must
+call `selectTimeframe(Timeframe.M1)` and wait for a state whose `timeframe` is
+`M1`. On H1 the first bucket is still forming and the closed-bar buffer is
+legitimately empty.

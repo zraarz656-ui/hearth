@@ -2,13 +2,16 @@ TRADEQUEST — COMPLETE ANDROID DEVELOPMENT PLAN
 
 # TRADEQUEST — COMPLETE ANDROID DEVELOPMENT PLAN
 
-Version: 2.2
+Version: 2.3
 Project: TradeQuest
 Platform: Android
 Language: Kotlin
 UI: Jetpack Compose
 Architecture: Offline-first
 Development Method: Phase-by-phase AI-assisted implementation
+
+Phase count: 16 (Phase 0 through Phase 15). Phase 15 was added after Phase 2
+was accepted, because no earlier phase owned a user-facing import entry point.
 
 ---
 
@@ -2374,6 +2377,138 @@ STOP AFTER PHASE 14.
 
 ---
 
+# PHASE 15 — DATASET IMPORT AND LIBRARY MANAGEMENT
+
+## Objective
+
+Give the app a user-facing way to bring a validated historical dataset in, and
+to manage datasets afterwards.
+
+This phase is deliberately LAST. It is the only phase that may not be started
+until Phases 0-14 are complete and accepted, because it depends on:
+
+- the market schema and the import transaction (Phase 2),
+- the validated import pipeline (Phase 1),
+- the trading calendar and dataset boundaries (Phase 3),
+- the season engine, which is what makes deletion and overwrite dangerous
+  (Phase 11).
+
+Until this phase exists, no dataset can enter the app through the UI. The
+Market Library is correctly empty, and every phase before this one is verified
+against synthetic fixtures and repository-level tests, not against a real
+imported file on a device.
+
+## Step 15.1 — Import Entry Point
+
+Provide an import action in two places:
+
+1. Market Library: a toolbar action, and a primary action inside the empty
+   state, so the empty state is actionable rather than a dead end.
+2. Settings: a secondary entry, so import is reachable from the expected
+   system location.
+
+Both routes must call the same import flow. Do not duplicate logic.
+
+Do not add import to any other screen.
+
+## Step 15.2 — File Selection
+
+Use the Storage Access Framework (`ACTION_OPEN_DOCUMENT`).
+
+- Request no broad storage permission. Persisted read access must be taken
+  only for the chosen document, and released afterwards.
+- Accept a single file. Reject multiple selection.
+- State the accepted formats in the picker filter and in the UI.
+- Never write to the selected location. Import is read-only from the source.
+
+The app remains fully offline. Do not add `INTERNET`.
+
+## Step 15.3 — Import Configuration
+
+The CSV column layout is not always self-describing, so before parsing:
+
+- Read the header row and map columns by name.
+- Require the source timezone. It has no default, and the UI must not invent
+  one. `CsvImportConfig.sourceTimeZone` is required on purpose (Step 1.4).
+- Show the detected columns and the selected timezone for confirmation before
+  a large import begins.
+
+## Step 15.4 — Import Progress and Cancellation
+
+A full dataset is tens of thousands of candles.
+
+- Parse, validate, and store off the main thread.
+- Show determinate progress where the total is known, indeterminate otherwise.
+- Allow cancellation, and leave no partial dataset behind. The store step is
+  already a single transaction (Step 2.7); cancellation before it must roll
+  back cleanly.
+- Do not block navigation during import.
+
+## Step 15.5 — Import Outcomes
+
+Report each outcome distinctly and honestly. Do not collapse them into a
+generic failure:
+
+- Stored.
+- Already present: identical content, nothing changed.
+- Content mismatch: the same dataset id with different content. Explain that
+  the stored dataset was kept, and why overwriting is refused.
+- Validation failure: report the specific issues, with counts and the first
+  offending rows. Do not offer to import invalid data.
+
+## Step 15.6 — Dataset Management
+
+- Delete a dataset. Refuse when a season references it, and say which season.
+  This restriction could not be implemented before Phase 11, because the
+  season engine is what makes it enforceable.
+- Rename the display name only. The dataset id, content hash, and candle data
+  are immutable.
+- Show candle count, covered period, validation status, and storage size.
+
+## Step 15.7 — Storage Reporting
+
+The per-dataset byte count is an estimate, not a measurement. `dbstat.path` is
+the B-tree path and never contains a row value, so a per-dataset figure cannot
+be read directly. Label it as an estimate in the UI. Do not present it as
+exact.
+
+## Step 15.8 — Tests
+
+Test:
+
+- Column mapping, including a file whose columns are reordered.
+- A missing required timezone is rejected.
+- Cancellation leaves no dataset and no candles behind.
+- Each import outcome, including content mismatch.
+- Deletion refused while a season references the dataset.
+- Deletion succeeds once no season references it.
+- Rename does not alter the id or the hash.
+- Re-importing the same file is idempotent.
+
+## Step 15.9 — Device Verification
+
+On a real device or emulator:
+
+- Import the reference dataset end to end.
+- Confirm the Market Library reports the correct period, candle count, and
+  validation status.
+- Start a season against it and confirm the chart renders.
+- Confirm the app still declares no `INTERNET` permission and works in
+  airplane mode.
+
+## Acceptance Criteria
+
+- A dataset can be imported from the UI without a developer tool.
+- Invalid data is refused with a specific reason.
+- An existing dataset is never silently overwritten.
+- A dataset in use by a season cannot be deleted.
+- The app remains fully offline.
+- Tests pass.
+
+STOP AFTER PHASE 15.
+
+---
+
 # 5. FINAL SYSTEM INTEGRATION CHECKLIST
 
 Before declaring TradeQuest complete, verify the complete user journey.
@@ -2382,17 +2517,18 @@ Before declaring TradeQuest complete, verify the complete user journey.
 
 1. Launch app.
 2. Open Market Library.
-3. Select one historical dataset.
-4. Enable or disable Blind Mode.
-5. Start a fresh $10,000 challenge.
-6. Open the chart.
-7. Observe historical price progression.
-8. Place a market order.
-9. Attach SL/TP.
-10. Watch PnL change.
-11. Close trade.
-12. Review journal.
-13. Open challenge dashboard.
+3. Import a historical dataset, if none is present yet (Phase 15).
+4. Select one historical dataset.
+5. Enable or disable Blind Mode.
+6. Start a fresh $10,000 challenge.
+7. Open the chart.
+8. Observe historical price progression.
+9. Place a market order.
+10. Attach SL/TP.
+11. Watch PnL change.
+12. Close trade.
+13. Review journal.
+14. Open challenge dashboard.
 
 Expected:
 

@@ -1372,3 +1372,95 @@ another dataset's rows — it stops the build. Treat any query that stops using
 6. **`tools/check_price_scale.py` now scans Kotlin too.** It rejects a
    `*Cents` field, a division by 100 on the price path, and `Double`/`Float`
    money fields. Verified by injecting each regression and confirming failure.
+
+---
+
+## Phase 15 — ADDED, NOT STARTED (2026-10-21)
+
+`TRADEQUEST_DEVELOPMENT_PLAN.md` is now **version 2.3 with 16 phases**
+(Phase 0 through Phase 15). Phase 15 — Dataset Import and Library Management —
+is the new final phase, added at the user's request.
+
+**Hard rule: Phase 15 must not be started until Phases 0-14 are complete and
+accepted.** It is last on purpose. Do not pull import work forward into an
+earlier phase, even though the storage layer has been ready since Phase 2.
+
+Why it is last: import *looks* like a Phase 2 concern, and the repository call
+(`RoomMarketRepository.storeImport`) plus the parsing pipeline (`CsvImporter`,
+`CandleValidator`, `MarketClosureDetector`, `DatasetManifest.build`) have
+existed since Phases 1-2. What was missing was a user-facing entry point. The
+plan never assigned one to any phase, which is a genuine gap in the original
+spec, not an oversight in the implementation.
+
+The dependencies that force it to the end:
+
+- **Delete and overwrite are only meaningful once seasons exist.** Refusing to
+  delete a dataset a season is replaying needs the season engine (Phase 11).
+  Step 15.6 depends on it.
+- **Device verification needs the chart.** Step 15.9 asks for a season to be
+  started against a real imported dataset, which needs Phases 4-11.
+
+So Phase 15 is the phase that finally turns "tested against synthetic fixtures"
+into "verified on a device with real data". Until then the Market Library is
+correctly and permanently empty in any installable build.
+
+## Two things required of every earlier phase, for Phase 15
+
+1. **Keep `storeImport` the only write path for datasets.** No phase may add a
+   second way to insert candles. Phase 15 routes through it, and its
+   idempotent-on-hash and refuse-on-mismatch behaviour is what makes
+   re-importing safe.
+2. **Do not add `INTERNET`.** Import reads a local file through the Storage
+   Access Framework. If a phase wants network access, that contradicts
+   `AGENTS.md` §3.5 and needs an explicit decision, not a quiet permission.
+
+## Phase 15 — MEASURED FINDINGS (2026-10-21)
+
+Verified while adding Phase 15, so Phase 15 does not rediscover them.
+
+### The Python manifest and the Kotlin manifest do NOT agree
+
+The Dukascopy tool writes a `.manifest.json` beside each CSV. It is **not** the
+manifest the app stores, and nothing in Kotlin reads it — there is no JSON
+reader for it. Both sides compute their own, from the same candles, and they
+differ in three ways:
+
+| | Python tool | Kotlin app |
+| --- | --- | --- |
+| `dataset_id` | `XAUUSD_2024-01-15_2024-01-16` | `ds_2535ac88e72c5151` |
+| `content_hash` | SHA-256 over `ts,o,h,l,c,vol,spread,dukavol` | SHA-256 over `ts\|o\|h\|l\|c\|vol` |
+| status wording | `PASSED` | `VALID` |
+
+Measured on the same two-day file: Python `009b9c2d…`, Kotlin `2535ac88…`.
+
+This is not a defect, because the app never consumes the Python manifest. But
+do not assume the JSON's hash is what gets stored, and do not compare the two
+hashes in a test — they are different canonicalisations on purpose. If Phase 15
+ever wants to display provenance, read the JSON as display metadata only and
+let Kotlin own the stored id and hash.
+
+### A real Dukascopy CSV does import cleanly
+
+Fetched 2024-01-15..2024-01-16 through `tools.dukascopy.fetch` and ran it
+through the real Kotlin pipeline (`CsvImporter` → `CandleValidator` →
+`MarketClosureDetector` → `DatasetManifest.build`):
+
+- 2,608 candles, 0 parse issues, 0 padding rows dropped, 0 precision-reduced.
+- `validationStatus = VALID`, `missingMinuteCount = 272`.
+- Prices exact at 3 decimals: `2047.525` → `2047525` units. No rounding loss.
+
+So the Phase 1 pipeline is correct against real vendor data, not only against
+synthetic fixtures. The one thing still unproven is the same path **on a
+device**, which is Step 15.9.
+
+### The environment can fetch Dukascopy data
+
+`datafeed.dukascopy.com` is reachable from this workspace. It rate-limits
+aggressively: a cold request can return HTTP 429 with a JSON body, and the same
+request succeeds after a pause. Use the tool's `--delay` (default 2.0s) rather
+than hand-rolled curl. A 3-month fetch is ~65 trading days; budget for it.
+
+The CSV column names the tool writes (`timestamp_utc`, `open`, `high`, `low`,
+`close`, `tick_volume`, `spread`, `dukascopy_volume`) match the Kotlin defaults,
+and extra columns are ignored, so the default `CsvImportConfig` works as-is
+apart from `sourceTimeZone`, which has no default by design.

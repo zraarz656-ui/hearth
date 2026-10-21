@@ -8,7 +8,7 @@ import com.tradequest.app.ui.components.UnfinishedScreen
 fun SettingsScreen(modifier: Modifier = Modifier) {
     UnfinishedScreen(
         featureName = "Settings",
-        plannedPhase = "Planned for Phase 14",
+        plannedPhase = "Planned for Phases 14-15",
         modifier = modifier,
     )
 }

@@ -488,5 +488,99 @@ challenge engine, news delivery or journal UI exists.
 
 ### Not started
 
-Phases 4 to 15. There is no market path engine, order matching, chart rendering,
-challenge engine, news delivery or journal.
+Phases 5 to 15. There is no order matching, chart rendering, challenge engine,
+news delivery or journal.
+
+---
+
+## Phase 4 — Deterministic market path engine — COMPLETE
+
+Delivered `core/simulation/path/`: one intraminute price path shared by the
+chart and the trading engine, as product rule 2.4 requires.
+
+### What was built
+
+- **Path shape (Step 4.1).** Bullish is open → low → high → close;
+  bearish is open → high → low → close; doji takes the bullish shape
+  as a documented tie-break. `WaypointTiming` is the only place that decides
+  order, so a renderer cannot quietly disagree with execution.
+- **Timing (Step 4.2).** Waypoints at 0, 15,000, 30,000 and 60,000 ms.
+- **Interpolation (Step 4.3).** Integer thousandths throughout. One rounding
+  rule (half away from zero), applied to the exact rational product, in one
+  function. The chart and execution call the same function, so they agree by
+  construction rather than by two implementations matching.
+- **Forming candle (Step 4.4).** `formingCandleAt` reports only traversed
+  extrema. Price is linear between waypoints, so the extreme over a traversed
+  prefix is at a waypoint or at the interpolated point; the scan is therefore
+  exact rather than a sample. There is deliberately no volume field, because
+  `tickVolume` is a whole-minute total and would leak the future.
+- **Crossing (Step 4.5).** `firstTouchElapsedMs` solves
+  `t* = t0 + (t1 - t0) * (T - p0) / (p1 - p0)` in integers and rounds up to the
+  first whole millisecond reached. Not a sampled search: a level touched and
+  left between two 1 Hz ticks is still found. `firstTouchFrom` respects a start
+  offset, so an order placed mid-minute is not filled by a crossing that
+  preceded it.
+- **Gaps (Step 4.6).** The engine never interpolates across candles. Each break
+  is an explicit `MarketGap` with the previous close, the next open and a
+  reason, and `MarketPathWindow.priceAt` returns **null** inside it. A level
+  "reached" by jumping a weekend is not a fill.
+- **Identity (Step 4.7).** A path is a pure function of dataset id, candle
+  timestamp, OHLC and `pathModelVersion`. The fingerprint is FNV-1a, chosen so
+  it does not depend on `hashCode()`, which is easy to break by reordering
+  fields.
+
+### Decisions worth recording
+
+- **A gap is a value, not an absence.** Modelling gaps only as "missing rows"
+  would leave the decision of how to draw or simulate across them to whoever
+  consumed the data. Making the break explicit means the default answer is
+  "there is no price here", which is the only defensible one.
+- **`MarketPathWindow` returns null rather than throwing inside a gap.** Time
+  legitimately passes through a closure, so a position query during a weekend is
+  a normal question with a normal answer, not an error.
+- **Candle order is validated, not repaired.** Out-of-order or duplicate
+  timestamps are rejected. A chart that silently sorted them would render a
+  picture that does not match the dataset.
+- **The fingerprint is pinned in a test.** If the algorithm or the model changes
+  without a version bump, that test fails, which is the point.
+
+### Bugs found by tests
+
+- **Five of this phase's own test expectations were wrong, not the code.** All
+  five concerned threshold crossings, and all five were recomputed independently
+  in Python before the code was touched. The most instructive: on a bullish
+  candle the rally from the low to the high passes back *through* the close
+  level, so the close is first touched at 26,250 ms, not at the end of the
+  minute. The final leg of a bearish candle rises to meet its close, so a level
+  below the close is crossed on the descent, not at the close. The code was
+  correct in every case; the expectations were not.
+- **A window lookup bug was introduced and caught by its own test.** The first
+  `indexOfCandleContaining` matched only exact candle starts, so a mid-minute
+  time resolved to no candle at all. Found by
+  `a mid-minute time resolves to the containing candle` and fixed by falling
+  back to the preceding candle while the time is still inside its minute.
+
+### Verification
+
+- `tests=332 failures=0 errors=0` (79 new in this phase; 253 before).
+- `:app:assembleDebug` succeeds.
+- `:app:lintDebug` reports 0 errors and 20 warnings, all pre-existing. No
+  warning is raised against any file added in this phase.
+- The merged manifest still declares no `android.permission.INTERNET`.
+
+### Unverified requirements
+
+- **Waypoint timing is an assumption, not a measurement.** Even quarter-minute
+  spacing means the high of a bullish minute is always at 30,000 ms and the low
+  at 15,000 ms. Which of a stop and a target is hit first is therefore a
+  property of this model. It cannot be validated against the stored data,
+  because 1-minute OHLC contains no intraminute ground truth. See
+  `docs/adr-0002-intraminute-path.md`.
+- **No rendering has been exercised.** Nothing in this phase draws anything, so
+  no claim is made about how the path looks on screen. That is Phase 8.
+- **No real dataset has been replayed.** Every test uses synthetic candles
+  built for the case under test. A real imported dataset has not been walked
+  minute by minute.
+- **Performance is unmeasured.** `priceAt` is O(waypoints) and window lookup is
+  O(log n), which is adequate by inspection, but no frame-rate or throughput
+  figure has been taken on a device.

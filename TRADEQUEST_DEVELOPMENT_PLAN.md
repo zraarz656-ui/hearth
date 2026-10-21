@@ -2,7 +2,7 @@ TRADEQUEST — COMPLETE ANDROID DEVELOPMENT PLAN
 
 # TRADEQUEST — COMPLETE ANDROID DEVELOPMENT PLAN
 
-Version: 2.4
+Version: 2.5
 Project: TradeQuest
 Platform: Android
 Language: Kotlin
@@ -879,7 +879,7 @@ STOP AFTER PHASE 3.
 
 ---
 
-# PHASE 4 — DETERMINISTIC MARKET PATH ENGINE
+# PHASE 4 — DETERMINISTIC MARKET PATH ENGINE — COMPLETE (2026-10-21)
 
 ## Objective
 
@@ -973,6 +973,34 @@ Test:
 - Crossing detection works.
 - Future candle extrema remain hidden.
 - Tests pass.
+
+### Implementation record
+
+Delivered in `core/simulation/path/`:
+
+- `PathTypes.kt` — `PathIdentity`, `PathWaypoint`, `FormingCandle`,
+  `MarketGap`, `GapReason`, `PathModelVersion`, `PathFingerprint` (FNV-1a).
+- `WaypointTiming.kt` — waypoint order and even quarter-minute timing
+  (0 / 15,000 / 30,000 / 60,000 ms).
+- `IntraminutePath.kt` — `priceAt` (exact integer interpolation, one rounding
+  rule), `firstTouchElapsedMs` / `firstTouchFrom` (solved crossings),
+  `formingCandleAt` (traversed extrema only).
+- `MarketPathBuilder.kt` — candle series to paths, with an explicit
+  `MarketGap` for every break.
+- `MarketPathWindow.kt` — time-indexed lookup. `priceAt` returns null inside a
+  gap, so no caller can interpolate across a closure.
+
+Verified: 332 tests, 0 failures (79 added by this phase; 253 before).
+`assembleDebug` and `lintDebug` green; no lint warning against any new file.
+No INTERNET permission.
+
+Decision record: `docs/adr-0002-intraminute-path.md`.
+
+Known limitation, recorded rather than hidden: waypoint timing is uniform
+quarter-minute spacing, which is an assumption and not a measurement. The
+relative order in which a stop and a target are hit on the same candle is
+therefore a property of this model, and cannot be validated against 1-minute
+OHLC because no intraminute ground truth exists in the dataset.
 
 STOP AFTER PHASE 4.
 

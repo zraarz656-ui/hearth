@@ -1560,3 +1560,72 @@ returning HTTP 503 after five retries. The tool caches per-day `.bi5` files
 under `tools/dukascopy/.cache/`, so a later run resumes rather than restarting.
 Do not hammer the vendor. A dataset is not required until Phase 15; Phases 3-14
 are verified against synthetic fixtures and repository-level tests.
+
+## Phase 4 — MARKET PATH: HARD RULES (2026-10-21)
+
+### One path, one implementation
+
+`MarketPathWindow` is the only way the chart and the trading engine may obtain a
+price. Neither may derive price from OHLC itself. Product rule 2.4 requires both
+to consume the same path; two derivations will drift, and the drift will be
+silent. If execution ever computes price independently, that is a bug even if
+its numbers currently agree.
+
+### Waypoint timing is an assumption, and must stay labelled as one
+
+Waypoints sit at 0, 15,000, 30,000 and 60,000 ms — uniform quarter-minute
+spacing. Consequences, which must not be presented otherwise:
+
+- The high of a bullish minute is always at 30,000 ms and the low at 15,000 ms,
+  regardless of the candle's shape.
+- On a candle whose range covers both a stop and a target, which one is hit
+  first is a property of *this model*, not of the market.
+- This cannot be validated against the dataset: 1-minute OHLC has no
+  intraminute ground truth. The model is unfalsifiable at this resolution, not
+  proven correct.
+
+Changing the timing or the order changes trade outcomes, so it requires a
+`PathModelVersion` bump. See `docs/adr-0002-intraminute-path.md`.
+
+### The doji rule is a tie-break, not knowledge
+
+With `open == close`, OHLC cannot distinguish a dip-then-rally from a
+rally-then-dip. The doji takes the bullish shape (low, then high) so the chart
+and execution agree and the renderer has no special case. Do not "fix" it to
+something else without a version bump.
+
+### Gaps are never interpolated
+
+A break between candles is an explicit `MarketGap`, and `priceAt` returns
+**null** inside one. Do not add a convenience that interpolates across a gap,
+and do not treat the price jump across one as tradable movement. A level
+"reached" by jumping a weekend is not a fill. Time passing through a closure is
+a normal question with a normal answer (null), not an error to throw.
+
+### All path arithmetic is integer, with one rounding rule
+
+Prices are `Int` thousandths of a USD. Interpolation multiplies into `Long`
+before dividing; a 1,000,000-unit range over 60,000 ms produces a 6e10 product
+that must not be computed in `Int`. Rounding is half away from zero, in one
+function. If you find yourself rounding in a second place, the chart and
+execution can now disagree, which is the bug this phase exists to prevent.
+
+### Crossing detection is solved, not sampled
+
+`firstTouchElapsedMs` / `firstTouchFrom` solve the crossing exactly and round up
+to the first whole millisecond reached. Do not replace this with a loop over
+1 Hz samples: a level touched and left between ticks would be missed, and a
+missed stop-loss is a correctness bug. `firstTouchFrom` exists so an order
+placed mid-minute is not filled by a crossing that preceded it.
+
+### Candle order is validated, not repaired
+
+`MarketPathBuilder` rejects out-of-order and duplicate timestamps rather than
+sorting. A silently sorted series renders a chart that does not match the
+dataset.
+
+### A window cannot see the future, because it does not hold it
+
+`MarketPathWindow` contains only the candles it was given. It has no repository
+access. Future information is not hidden from it; it is absent. Do not add a
+repository or a "load more" call to it.

@@ -18,9 +18,27 @@ Simulation clock, deterministic intraminute market path, replay processor and ti
 - `calendar/DatasetTradingCalendar.kt` — combines the rules above with the
   closures actually observed in a dataset.
 
+**Phase 4 — deterministic market path engine.**
+
+- `path/PathTypes.kt` — `PathIdentity`, `PathWaypoint`, `FormingCandle`,
+  `MarketGap`, `PathModelVersion`, and the `PathFingerprint` (FNV-1a) that makes
+  a path's identity stable without relying on `hashCode()`.
+- `path/WaypointTiming.kt` — the single place that decides *when* the high and
+  low occur. Shape is open → low → high → close for bullish and doji,
+  open → high → low → close for bearish.
+- `path/IntraminutePath.kt` — one candle's path. `priceAt` interpolates exactly
+  in integers; `firstTouchElapsedMs` / `firstTouchFrom` **solve** a threshold
+  crossing rather than sampling; `formingCandleAt` returns only traversed
+  extrema.
+- `path/MarketPathBuilder.kt` — turns a candle series into paths and emits an
+  explicit `MarketGap` for every break between candles.
+- `path/MarketPathWindow.kt` — time-indexed view over a run of candles.
+  `priceAt` returns **null** inside a gap, so a caller cannot interpolate across
+  a weekend by accident.
+
 ## Not implemented
 
-The deterministic market path, replay processor and time warp (Phases 4 and 12).
+The replay processor and time warp (Phase 12).
 
 ## Key rules
 
@@ -32,5 +50,10 @@ The deterministic market path, replay processor and time warp (Phases 4 and 12).
   clocks on different dates and the London/New York overlap genuinely differs
   by an hour for two weeks each spring and autumn.
 - The simulation stops at the dataset endpoint and never enters another dataset.
+- The chart and the trading engine must consume `MarketPathWindow`, never
+  re-derive a path from OHLC. Two derivations would drift (product rule 2.4).
+- Waypoint timing is an **assumption**, not a measurement: it is uniform
+  quarter-minute spacing, so which of a stop and a target is hit first is a
+  property of this model. See `docs/adr-0002-intraminute-path.md`.
 
 See `docs/architecture.md` for the dependency rules that govern this package.

@@ -1960,6 +1960,39 @@ real jank. `[chart]` lines appear only when the drawn viewport changes, so a pan
 or pinch produces a run of lines whose `visible=` and `first=` values show
 whether the gesture reached the renderer at all.
 
+### The instrument must not measure itself
+
+The first device capture showed jank in exactly the windows that contained a pan
+(15, 9, 6, 2) and exactly zero in eight consecutive idle windows. That is not a
+rendering signature; it is the signature of the logger.
+
+`DebugDiagnostics.log()` called `Log.i` inline. The original comment claimed
+logcat is "cheap and synchronous" — the synchronous half is true and is the whole
+problem: `Log.i` writes to `logd` over a socket, so it is a blocking IPC on the
+calling thread. The calling thread here is the chart's **draw block**, and a pan
+emits about 60 lines/second. The frame monitor then measured the cost of the
+logger and reported it as the chart's performance.
+
+Three changes fix it, and all three are needed:
+
+1. **All formatting and I/O moved to the writer thread.** `log()` now only
+   enqueues a lambda. The timestamp formatter is a single reused
+   `SimpleDateFormat` on that thread instead of a fresh one per line.
+2. **`logChartState` takes the `ChartRenderState`, not a formatted `String`.**
+   Passing a `String` forced `String.format` to run on the draw thread *before*
+   the dedup check could discard it. It now compares raw primitives and formats
+   only what survives, on the writer thread.
+3. **The hot path is rate-limited to 10 lines/s** (`CHART_MIN_INTERVAL_NANOS`),
+   down from one line per frame. Still dense enough to reconstruct a pan's shape
+   and endpoints; dedup still suppresses a static chart entirely.
+
+The remaining caller-side cost is one small lambda allocation per accepted
+sample. That is an allocation, not a syscall, and it is bounded by the rate limit.
+
+**The lesson, recorded because it will recur:** a diagnostic that shares a thread
+with the thing it measures will report itself. When a capture shows load-
+correlated jank, suspect the instrument before the code.
+
 ### Reading the log on the device, not over `adb`
 
 A second launcher icon, **TradeQuest Debug**, opens `DebugLogActivity` — a

@@ -34,17 +34,12 @@ class DebugTradeQuestApplication : TradeQuestApplication() {
         // Reports what the chart actually drew, which is what pan/zoom debugging
         // needs. The chart lives in `main`, so this hook is the only way for a
         // debug build to observe it.
+        //
+        // The state is handed over unformatted: formatting on this thread would
+        // mean `String.format` running inside the draw block, which is the cost
+        // this hook was fixed to avoid.
         ChartDiagnosticsHook.onDraw = { state ->
-            val v = state.viewport
-            DebugDiagnostics.logChartState(
-                "tf=${state.timeframe} bars=${state.totalBars} " +
-                    "visible=%.1f first=%.2f pad=%.1f autoscale=%b forming=%b sim=%s"
-                        .format(
-                            v.barsVisible, v.firstVisibleIndex, v.rightPaddingBars,
-                            v.autoScale, state.formingCandle != null,
-                            state.simulatedUtcMs ?: "-",
-                        ),
-            )
+            DebugDiagnostics.logChartState(state)
         }
     }
 }

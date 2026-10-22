@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.Choreographer
+import com.tradequest.app.core.chart.renderer.ChartRenderState
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -50,6 +51,19 @@ internal object DebugDiagnostics {
     /** Frames per summary block. At 60 Hz this is roughly every 5 seconds. */
     internal const val FRAME_WINDOW = 300
 
+    /**
+     * Minimum gap between chart-state log lines: 100 ms, so at most 10 lines/s.
+     *
+     * A pan redraws every frame, and before this cap the log carried one line per
+     * frame — about 60/s. Even with the formatting moved off the draw thread,
+     * that is a lot of queue traffic and a lot of output to read. Ten per second
+     * is still dense enough to reconstruct a pan's shape and its endpoints, which
+     * is what the capture is for.
+     *
+     * Dedup runs in addition to this: a static chart produces no lines at all.
+     */
+    private const val CHART_MIN_INTERVAL_NANOS = 100_000_000L
+
     private val lock = Any()
 
     @Volatile
@@ -61,17 +75,41 @@ internal object DebugDiagnostics {
     /**
      * Single writer thread.
      *
-     * [log] is called from the frame callback, which runs on the main thread.
-     * Appending to a file there would stall the main thread for the duration of
-     * a write, and — because the frame monitor is what calls it — the stall
-     * would land in the very frame-interval samples being reported, inflating
-     * p99/max with the cost of measuring. One dedicated thread keeps the main
-     * thread clean and preserves line order, which a thread pool would not.
+     * This thread owns *everything* expensive: timestamp formatting, string
+     * building, the `logcat` write, and the file append. Callers only hand over
+     * raw values.
+     *
+     * # Why logcat is not written on the caller's thread
+     *
+     * An earlier version called `Log.i` inline, on the theory that it is "cheap
+     * and synchronous". The second half was true and the first was not: `Log.i`
+     * writes to `logd` over a socket, so it is a synchronous IPC on whichever
+     * thread calls it. The hottest caller is the chart's draw block, which emits
+     * a line per pan frame — roughly 60 per second. That put 60 blocking IPC
+     * writes per second inside the frame callback, and the resulting jank was
+     * then measured by the frame monitor and reported as the *chart's*
+     * performance. The instrument was measuring itself.
+     *
+     * Device logs confirmed it: jank appeared only in windows containing a pan
+     * (15, 9, 6, 2) and was exactly zero in eight consecutive idle windows.
+     *
+     * So the main thread now only enqueues. The cost that remains is one small
+     * lambda allocation per accepted sample, bounded by [CHART_MIN_INTERVAL_NANOS].
      */
     private val writer: java.util.concurrent.ExecutorService =
         java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
             Thread(runnable, "tradequest-debug-log").apply { isDaemon = true }
         }
+
+    /**
+     * Formatter for the log's timestamp column.
+     *
+     * Not thread-safe by contract, which is fine: only [writer]'s thread touches
+     * it. The previous implementation built a fresh `SimpleDateFormat` for every
+     * line, which is a comparatively expensive allocation to make 60 times a
+     * second on the draw thread.
+     */
+    private val timestampFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
     /** Opens the log and writes the device header. Idempotent per process. */
     fun start(context: Context) {
@@ -120,18 +158,45 @@ internal object DebugDiagnostics {
         }
     }
 
-    /** Appends one timestamped line. Safe from any thread; never blocks the caller. */
+    /**
+     * Appends one timestamped line.
+     *
+     * The caller's thread does no formatting, no logcat write and no file I/O —
+     * it enqueues a lambda and returns. Everything else happens on [writer]. See
+     * the note on [writer] for why this matters: this method is called from the
+     * chart's draw block.
+     */
     fun log(category: String, message: String) {
-        val line = "${timestamp()} [$category] $message\n"
-        // logcat first: it is cheap and synchronous, so the line is visible even
-        // if the process dies before the writer thread drains.
+        enqueue { line(category, message) }
+    }
+
+    /**
+     * The actual write, on [writer]'s thread.
+     *
+     * `Log.i` is kept — it is how a line survives if the process dies before the
+     * file append lands — but it now runs here, off the main thread, so its IPC
+     * cost cannot land in a measured frame interval.
+     */
+    private fun line(category: String, message: String) {
+        val text = "${timestamp()} [$category] $message\n"
         Log.i(TAG, "[$category] $message")
-        writer.execute {
-            synchronized(lock) {
-                logFile?.appendText(line)
-            }
+        synchronized(lock) {
+            logFile?.appendText(text)
         }
     }
+
+    /**
+     * Hands [work] to [writer].
+     *
+     * The lambda captures its arguments, so a small allocation is unavoidable
+     * without a ring buffer; that is the one cost still paid by the caller. It is
+     * an allocation, not a syscall, and the hot path bounds how often it happens.
+     */
+    private inline fun enqueue(crossinline work: () -> Unit) {
+        writer.execute { work() }
+    }
+
+    private fun timestamp(): String = timestampFormat.format(Date())
 
     /** Absolute path of the log file, shown on the debug log screen. */
     fun logPath(): String = logFile?.absolutePath ?: "(diagnostics not started)"
@@ -172,9 +237,6 @@ internal object DebugDiagnostics {
         log("session", "log cleared")
     }
 
-    private fun timestamp(): String =
-        SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
-
     private fun logDevice(context: Context) {
         val metrics = context.resources.displayMetrics
         log("device", "model=${Build.MANUFACTURER} ${Build.MODEL}")
@@ -190,21 +252,77 @@ internal object DebugDiagnostics {
     // ---------- chart state ----------
 
     /**
-     * Records the chart's draw-relevant state once per published frame.
+     * Records the chart's draw-relevant state.
      *
-     * Called from the chart's draw path, so it must stay cheap and must not
-     * write to disk directly. Repeats are dropped: a static chart redraws every
-     * frame with identical numbers, and logging each one would bury the
-     * transitions that actually matter.
+     * Called from the chart's draw path on every frame, so this method is the one
+     * that must stay nearly free. It does three things and no more:
+     *
+     * 1. Rate-limits to [CHART_MIN_INTERVAL_NANOS].
+     * 2. Compares the raw values against the last logged ones and drops repeats.
+     * 3. Enqueues the formatting onto [writer].
+     *
+     * The previous version took an already-formatted `String`, which meant the
+     * caller built a `String.format` — the expensive part — on the draw thread
+     * *before* the dedup check could throw it away. Passing the state itself
+     * instead lets the format run on [writer]'s thread, and only for a sample that
+     * survived both filters.
+     *
+     * The dedup key is the rendered text's inputs rather than the text, because
+     * the text does not exist yet. Comparing the floats directly is what the
+     * `visible=`/`first=` columns were already showing.
      */
-    fun logChartState(detail: String) {
-        if (detail == lastChartState) return
-        lastChartState = detail
-        log("chart", detail)
+    fun logChartState(state: ChartRenderState) {
+        val now = System.nanoTime()
+        if (now - lastChartLogNanos < CHART_MIN_INTERVAL_NANOS) return
+
+        val viewport = state.viewport
+        val key = ChartStateKey(
+            timeframe = state.timeframe,
+            totalBars = state.totalBars,
+            barsVisible = viewport.barsVisible,
+            firstVisibleIndex = viewport.firstVisibleIndex,
+            rightPaddingBars = viewport.rightPaddingBars,
+            autoScale = viewport.autoScale,
+            forming = state.formingCandle != null,
+            simulatedUtcMs = state.simulatedUtcMs,
+        )
+        if (key == lastChartState) return
+
+        lastChartLogNanos = now
+        lastChartState = key
+        enqueue { line("chart", key.describe()) }
     }
 
     @Volatile
-    private var lastChartState: String? = null
+    private var lastChartLogNanos: Long = 0L
+
+    @Volatile
+    private var lastChartState: ChartStateKey? = null
+
+    /**
+     * The chart state fields that appear in a log line, as a comparable value.
+     *
+     * Exists so the draw-path dedup can compare primitives instead of formatted
+     * text. `describe()` reproduces the column layout the device logs used, so
+     * existing captures stay readable.
+     */
+    private data class ChartStateKey(
+        val timeframe: Any,
+        val totalBars: Int,
+        val barsVisible: Float,
+        val firstVisibleIndex: Float,
+        val rightPaddingBars: Float,
+        val autoScale: Boolean,
+        val forming: Boolean,
+        val simulatedUtcMs: Long?,
+    ) {
+        fun describe(): String =
+            "tf=%s bars=%d visible=%.1f first=%.2f pad=%.1f autoscale=%b forming=%b sim=%s"
+                .format(
+                    timeframe, totalBars, barsVisible, firstVisibleIndex,
+                    rightPaddingBars, autoScale, forming, simulatedUtcMs ?: "-",
+                )
+    }
 
     // ---------- frame timing ----------
 

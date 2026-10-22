@@ -1218,18 +1218,29 @@ catalog. Do not guess versions.
 
 ## GitHub access
 
-`GITHUB_TOKEN` is a GitHub App installation token: it can READ public
-repositories and read metadata for installed ones, but it CANNOT write
-(`403 Resource not accessible by integration`) and cannot create
-repositories. `GITHUB_PUSH_TOKEN` is dead (401).
+`GITHUB_TOKEN` is a GitHub App installation token. The REST API reports
+`permissions: {push: true}` for this repo, but **git push is still denied**
+(`403 Permission to zraarz656-ui/hearth.git denied`). The API permission flags
+describe the installation, not what the token can do over git, so do not treat
+`push: true` as evidence a push will work. `GITHUB_PUSH_TOKEN` is dead (401).
 
-`GITHUB_PUSH_TOKEN` and `GITHUB_TOKEN` are managed secrets. To push, use a
-registered secret referenced as an environment variable. Never paste a token
-into the conversation and never write one into a file.
+Re-verified 2026-10-20 with `git push` against both. Neither managed secret can
+push. A push needs a `repo`-scoped PAT from the user.
 
-Phase 1 was pushed with a `repo`-scoped PAT used only as a transient git
-remote URL, then the remote was reset to the plain HTTPS URL. A PAT in a
-remote URL is stored in `.git/config` in plaintext; reset it afterwards.
+To push with a supplied PAT, pass it as a transient URL and nothing else:
+
+```
+git push "https://x-access-token:$GH_PUSH_TOKEN@github.com/zraarz656-ui/hearth.git" \
+  <branch>:<branch>
+```
+
+Never write a token into `.git/config`, a file, or a committed script. After
+pushing, confirm `.git/config` is clean (`grep -c 'ghp_\|x-access-token'
+.git/config` must be 0) and that `git remote -v` still shows the plain HTTPS
+URL. A PAT in a remote URL is stored in `.git/config` in plaintext.
+
+Phase 1 and Phase 9 were both pushed this way. `GITHUB_TOKEN` is still the right
+token for read-only API calls (it authenticates, and can read the repo).
 
 ## Dukascopy dataset tooling (verified 2026-10-21)
 

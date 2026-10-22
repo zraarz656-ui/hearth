@@ -182,4 +182,86 @@ class ChartFrameAssemblerTest {
         assertNull(state.formingCandle)
         assertEquals(0, state.totalBars)
     }
+
+    // ---------- Opening a short series (device-reported) ----------
+
+    /**
+     * The device case: a 4-bar weekly chart opened on a 120-bar window.
+     *
+     * Reported from a HONOR BRP-NX1. Weekly has 4 bars and opened at
+     * `first=-111.00` — the right-hand clamp — putting four candles in the last 3%
+     * of the plot with 97% of the screen empty.
+     *
+     * # Why this is an assembler test and not a viewport test
+     *
+     * The viewport-level fix was not enough. The ViewModel seeds the opening window
+     * from `openingBarCount`, which returns the *minute* count when no season is
+     * running — 20,548 minutes for a dataset whose weekly series is 4 bars. Fitting
+     * against that number is a no-op, so the bug survived. The real bar count only
+     * exists after aggregation, which is here.
+     */
+    @Test
+    fun `a short series opens fitted rather than crammed into the right edge`() {
+        // Enough minutes to make four weekly bars, no clock: the historical path the
+        // device was in (every log line showed `sim=-`).
+        val candles = ChartFixtures.rising(4 * 7 * 24 * 60)
+
+        val state = ChartFrameAssembler.build(
+            candles = candles,
+            timeframe = Timeframe.W1,
+            style = chartStyleFor(ThemeMode.DARK),
+            window = null,
+            simulatedUtcMs = null,
+            viewport = ChartViewport.DEFAULT,
+            fallback = fallback,
+            fitToData = true,
+        )
+
+        val viewport = state.viewport
+        assertTrue(
+            "expected a handful of weekly bars, got ${state.totalBars}",
+            state.totalBars in 4..6,
+        )
+
+        // The candles must fill a useful share of the window rather than a sliver.
+        val share = state.totalBars / viewport.barsVisible
+        assertTrue(
+            "${state.totalBars} bars in a ${viewport.barsVisible}-bar window " +
+                "(only ${"%.1f".format(share * 100)}% of the screen)",
+            share >= 0.5f,
+        )
+
+        // And still at the live edge, which is where a chart opens.
+        assertEquals(
+            viewport.maxFirstVisibleIndex(state.totalBars),
+            viewport.firstVisibleIndex,
+            0.01f,
+        )
+    }
+
+    @Test
+    fun `a long series is not refitted when the caller is not introducing it`() {
+        // `refreshFormingCandle` re-enters `build` on every clock tick. Fitting there
+        // would undo a pinch-out on the next frame, so a caller that is refreshing a
+        // view the user has adjusted must get its viewport back untouched.
+        val candles = ChartFixtures.rising(4 * 7 * 24 * 60)
+        val zoomedOut = ChartViewport(
+            barsVisible = 300f,
+            firstVisibleIndex = 0f,
+            rightPaddingBars = ChartViewport.DEFAULT_RIGHT_PADDING_BARS,
+        )
+
+        val state = ChartFrameAssembler.build(
+            candles = candles,
+            timeframe = Timeframe.W1,
+            style = chartStyleFor(ThemeMode.DARK),
+            window = null,
+            simulatedUtcMs = null,
+            viewport = zoomedOut,
+            fallback = fallback,
+            fitToData = false,
+        )
+
+        assertEquals(300f, state.viewport.barsVisible, 0.001f)
+    }
 }

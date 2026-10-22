@@ -102,13 +102,35 @@ class TradingViewModel(
     private var dataset: DatasetSummary? = null
 
     /**
-     * The viewport the user has panned or zoomed to.
+     * The viewport the chart last showed.
      *
      * The chart owns its viewport during a gesture, so this is only the seed for
      * the next frame. It is remembered so a clock tick, which republishes the
      * whole state, does not snap the chart back to its opening position.
+     *
+     * Written by [onViewportChanged] *and* by [publish], so it is "the last
+     * viewport", not "the viewport the user chose". [userAdjustedViewport] is what
+     * distinguishes the two.
      */
     private var lastViewport: ChartViewport? = null
+
+    /**
+     * Whether [lastViewport] came from a gesture rather than from a publish.
+     *
+     * A timeframe switch carries the centre *moment* across so the trader keeps
+     * looking at the same session (Step 9.9). That is only meaningful for a window
+     * the user chose: a trader who never scrolled is at the live edge, and the
+     * switch should leave them there rather than pinning them to the centre of an
+     * opening window they never picked. Without this flag the centre is carried
+     * from whatever the opening view happened to be.
+     *
+     * The distinction was invisible until the opening view was fitted to short
+     * series. Before that, an opening window of 120 bars over a 10-bar hourly series
+     * put the centre index outside the buffer, `centreTimestamp` returned null, and
+     * the live-edge fallback ran by accident. Fitting the opening view made the
+     * centre valid, which exposed it.
+     */
+    private var userAdjustedViewport: Boolean = false
 
     /** The bucket boundary the current buffer was built for. See the tick loop. */
     private var lastBucketStart: Long? = null
@@ -257,7 +279,12 @@ class TradingViewModel(
         // what stops a timeframe switch from silently teleporting the user to an
         // unrelated point in history.
         pendingCentreUtcMs = (_state.value as? TradingState.Ready)?.let { ready ->
-            lastViewport?.let { ChartTimeframeAnchor.centreTimestamp(it, ready.renderState.buffer) }
+            // Only a window the user chose is worth carrying. At the opening view the
+            // trader has not looked at anything yet, so the live edge is the right
+            // place to land — carrying an opening window's centre would pin them to a
+            // moment they never picked.
+            if (!userAdjustedViewport) null
+            else lastViewport?.let { ChartTimeframeAnchor.centreTimestamp(it, ready.renderState.buffer) }
         }
 
         timeframe = next
@@ -266,6 +293,7 @@ class TradingViewModel(
         // frame opens at the live edge, which is the old behaviour and still the
         // right answer.
         lastViewport = null
+        userAdjustedViewport = false
         lastBucketStart = null
         val summary = dataset ?: return
         // Aggregation over 200,000 minutes is real work, so it is off the main
@@ -293,6 +321,7 @@ class TradingViewModel(
      */
     fun onViewportChanged(viewport: ChartViewport) {
         lastViewport = viewport
+        userAdjustedViewport = true
     }
 
     /**
@@ -312,8 +341,16 @@ class TradingViewModel(
         val centre = pendingCentreUtcMs
         pendingCentreUtcMs = null
 
+        // `fitToData` only when this call is introducing a series: an opening view,
+        // or the first frame after a timeframe switch (which clears `lastViewport`).
+        // Every other publish is refreshing a view the user has already adjusted, and
+        // fitting there would undo a pinch-out on the next frame. The real bar count
+        // is only known after aggregation, so the assembler applies it — the count
+        // this method could pass is the *minute* count, which is 20,548 for a dataset
+        // whose weekly series has 4 bars.
+        val introducing = lastViewport == null
         val viewport = lastViewport
-            ?: ChartViewport.DEFAULT.scrolledToEnd(openingBarCount(simMs))
+            ?: ChartViewport.DEFAULT.openingFor(openingBarCount(simMs))
 
         val renderState = withContext(computeDispatcher) {
             ChartFrameAssembler.build(
@@ -325,6 +362,7 @@ class TradingViewModel(
                 viewport = viewport,
                 fallback = LAST_RESORT_RANGE,
                 anchorUtcMs = centre,
+                fitToData = introducing,
             )
         }
         lastViewport = renderState.viewport

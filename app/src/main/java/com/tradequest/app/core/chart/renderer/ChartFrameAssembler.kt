@@ -48,6 +48,12 @@ object ChartFrameAssembler {
      *   viewport is a bar count that no longer means anything and only the moment
      *   is worth keeping. It is resolved here, against the buffer this call builds,
      *   so the new series is aggregated once rather than twice.
+     * @param fitToData whether to narrow the window when the series is too short to
+     *   fill it. Set by a caller that is *introducing* a series — an opening view —
+     *   and never by one that is refreshing a view the user has already adjusted, or
+     *   the fit would undo a pinch-out on the next frame. The bar count is only known
+     *   here, after aggregation, which is why this is a flag rather than something
+     *   the caller can pre-compute.
      * @param fallback used only when no visible candle yields a price.
      */
     fun build(
@@ -59,6 +65,7 @@ object ChartFrameAssembler {
         viewport: ChartViewport,
         fallback: PriceAxisRange,
         anchorUtcMs: Long? = null,
+        fitToData: Boolean = false,
     ): ChartRenderState {
         val buffer: CandleBuffer
         val forming: FormingCandleView?
@@ -88,14 +95,28 @@ object ChartFrameAssembler {
         // Step 9.9: an anchor overrides the incoming viewport's position. It is
         // resolved here so the switch aggregates once. A null result means the moment
         // is outside the new series, so the live-edge viewport stands.
+        //
+        // Two things have to happen before the centre is placed:
+        //
+        //  - The fit, when the caller is introducing this series. Narrowing a window
+        //    keeps `firstVisibleIndex`, which moves the centre, so fitting after the
+        //    anchor would push the moment off-centre. Fitting first means the centre
+        //    is placed using the width that will actually be drawn.
+        //  - It must be driven by `totalBars`, the count just aggregated. A caller
+        //    cannot pre-compute this: the ViewModel's `openingBarCount` returns the
+        //    *minute* count when no season is running, which is 20,548 for a dataset
+        //    whose weekly series has 4 bars. Fitting against that number left the
+        //    weekly chart opening on a 120-bar window — the reported bug.
+        val base = if (fitToData) viewport.openingFor(totalBars) else viewport
+
         val anchored = anchorUtcMs?.let { moment ->
             ChartTimeframeAnchor.viewportAt(
                 centreUtcMs = moment,
                 nextBuffer = buffer,
-                barsVisible = viewport.barsVisible,
-                rightPaddingBars = viewport.rightPaddingBars,
-            )
-        } ?: viewport
+                barsVisible = base.barsVisible,
+                rightPaddingBars = base.rightPaddingBars,
+            ) ?: base
+        } ?: base
 
         val clamped = anchored.clampedToData(totalBars)
         val priceRange = priceRangeFor(buffer, forming, clamped, fallback)

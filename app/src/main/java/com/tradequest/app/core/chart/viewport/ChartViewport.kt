@@ -141,6 +141,59 @@ data class ChartViewport(
         return if (clamped == firstVisibleIndex) this else copy(firstVisibleIndex = clamped)
     }
 
+    /**
+     * The viewport a chart opens with for a series of [dataSize] bars.
+     *
+     * # Why the default window is not always right
+     *
+     * [DEFAULT_BARS_VISIBLE] is a good opening window for a long series, but a series
+     * *shorter* than it has nothing to fill the window with. A 4-bar weekly series
+     * opened at `first=-111.00` — exactly the right-hand clamp — which on a phone puts
+     * four candles in the last 3% of the plot with the rest of the screen empty, and a
+     * five-bar gutter wider than the entire dataset. Reported from a device on W1, D1
+     * and H4 (4, 16 and 91 bars), each exactly on the clamp.
+     *
+     * Fitting first and scrolling second means a short series opens showing all of
+     * itself, still at its live edge.
+     */
+    fun openingFor(dataSize: Int): ChartViewport = fittedToData(dataSize).scrolledToEnd(dataSize)
+
+    /**
+     * The same viewport with its window narrowed when the series is too short to fill
+     * it.
+     *
+     * # Why this is not [clampedToData]
+     *
+     * [clampedToData] only moves the window horizontally; it cannot make the candles
+     * wider. A 120-bar window over 4 bars is not a position problem, it is a zoom
+     * problem, so the zoom is what has to give.
+     *
+     * # Why the gutter shrinks too
+     *
+     * [rightPaddingBars] exists to read the current price against the axis, and five
+     * bars is right on a full screen. On a 4-bar series it is larger than the data, so
+     * the gutter alone would be more than half the chart. It is capped at a quarter of
+     * the series, keeping a proportional margin instead of a screenful of nothing.
+     *
+     * # Why the caller chooses when to apply it
+     *
+     * Fitting on every frame would fight the user: a pinch-out would be undone by the
+     * next frame, so zooming out would simply stop working. It is applied where a
+     * series is *introduced* — an opening view, or a timeframe switch — and never to a
+     * viewport the user has since adjusted.
+     */
+    fun fittedToData(dataSize: Int): ChartViewport {
+        if (dataSize <= 0) return this
+
+        val padding = minOf(rightPaddingBars, maxOf(1f, dataSize / 4f))
+        val needed = dataSize + padding
+        if (barsVisible <= needed) {
+            // Wide enough already; only the gutter may still need shrinking.
+            return if (padding == rightPaddingBars) this else copy(rightPaddingBars = padding)
+        }
+        return copy(barsVisible = maxOf(needed, MIN_BARS_VISIBLE), rightPaddingBars = padding)
+    }
+
     companion object {
         /**
          * Extra bars drawn outside the visible window.

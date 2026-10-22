@@ -28,23 +28,33 @@ class ChartGestureController(
     private val maxBarsVisible: Float = MAX_BARS_VISIBLE,
 ) {
 
+    /** The bar limits this controller clamps to when a caller does not supply any. */
+    val defaultLimits: ChartZoomLimits = ChartZoomLimits(minBarsVisible, maxBarsVisible)
+
     /**
      * [viewport] zoomed by [factor], keeping the bar at [anchorFraction] of the
      * plot width fixed.
      *
      * [factor] above 1 widens the window (zoom out); below 1 narrows it (zoom in).
      * [anchorFraction] is 0 at the left edge and 1 at the right edge.
+     *
+     * [limits] carries the candle-width bounds in bars (Step 9.4). It defaults to
+     * this controller's own, so a caller that has not measured its plot yet — or a
+     * test that does not care — behaves as it did before the limits were expressible
+     * in candle width.
      */
     fun zoomBy(
         viewport: ChartViewport,
         factor: Float,
         anchorFraction: Float,
         dataSize: Int,
+        limits: ChartZoomLimits = defaultLimits,
     ): ChartViewport {
         if (factor <= 0f || !factor.isFinite()) return viewport
 
         val clampedAnchor = anchorFraction.coerceIn(0f, 1f)
-        val newBars = (viewport.barsVisible * factor).coerceIn(minBarsVisible, maxBarsVisible)
+        val newBars = (viewport.barsVisible * factor)
+            .coerceIn(limits.minBarsVisible, limits.maxBarsVisible)
         if (newBars == viewport.barsVisible) return viewport
 
         // The data index under the anchor before the zoom.
@@ -99,10 +109,15 @@ class ChartGestureController(
      * because an earlier version used the opposite convention and the two methods
      * then disagreed, which is the kind of thing a caller cannot see from the name.
      */
-    fun zoomStep(viewport: ChartViewport, steps: Int, dataSize: Int): ChartViewport {
+    fun zoomStep(
+        viewport: ChartViewport,
+        steps: Int,
+        dataSize: Int,
+        limits: ChartZoomLimits = defaultLimits,
+    ): ChartViewport {
         if (steps == 0) return viewport
         val factor = Math.pow(ZOOM_STEP_FACTOR.toDouble(), steps.toDouble()).toFloat()
-        return zoomBy(viewport, factor, anchorFraction = 0.5f, dataSize = dataSize)
+        return zoomBy(viewport, factor, anchorFraction = 0.5f, dataSize = dataSize, limits = limits)
     }
 
     /** The zoom level as a whole number of bars, for display. */

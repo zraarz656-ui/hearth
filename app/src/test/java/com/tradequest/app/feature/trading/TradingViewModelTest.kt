@@ -5,6 +5,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.tradequest.app.core.chart.renderer.FormingCandleView
 import com.tradequest.app.core.chart.timeframe.Timeframe
+import com.tradequest.app.core.chart.viewport.ChartTimeframeAnchor
 import com.tradequest.app.core.database.market.Candle1mEntity
 import com.tradequest.app.core.database.market.MarketDatabase
 import com.tradequest.app.core.database.market.MarketDatasetEntity
@@ -175,6 +176,53 @@ class TradingViewModelTest {
 
     private suspend fun readyState(vm: TradingViewModel): TradingState.Ready =
         vm.state.first { it is TradingState.Ready } as TradingState.Ready
+
+    // ---------- Step 9.9: the centre survives a timeframe switch ----------
+
+    @Test
+    fun `switching timeframe keeps the centre moment on screen`() = runTest(dispatcher) {
+        // Enough minutes that hourly aggregation still leaves a wide series, so the
+        // centre can genuinely be honoured rather than being pinned to the edge.
+        insertDataset(minutes = 20_000)
+        sessions.season = null
+        sessions.simUtcMs = null
+
+        val vm = viewModel()
+        advanceUntilIdle()
+        val h1 = readyState(vm)
+
+        // Scroll well back into history, away from the live edge.
+        val scrolled = h1.renderState.viewport.copy(firstVisibleIndex = 100f)
+        vm.onViewportChanged(scrolled)
+
+        val centreBefore = ChartTimeframeAnchor.centreTimestamp(scrolled, h1.renderState.buffer)
+        assertNotNull("the fixture must have a centre to keep", centreBefore)
+
+        vm.selectTimeframe(Timeframe.M1)
+        val m1 = vm.state.first { it is TradingState.Ready && it.timeframe == Timeframe.M1 } as TradingState.Ready
+
+        val centreAfter = ChartTimeframeAnchor.centreTimestamp(m1.renderState.viewport, m1.renderState.buffer)
+        assertEquals("the switch must not teleport the user", centreBefore, centreAfter)
+    }
+
+    @Test
+    fun `a switch with no prior viewport opens at the live edge`() = runTest(dispatcher) {
+        insertDataset(minutes = 600)
+        sessions.season = null
+        sessions.simUtcMs = null
+
+        val vm = viewModel()
+        advanceUntilIdle()
+        vm.selectTimeframe(Timeframe.M1)
+        val m1 = vm.state.first { it is TradingState.Ready && it.timeframe == Timeframe.M1 } as TradingState.Ready
+
+        // No `onViewportChanged` was ever called, so there is no centre to carry and
+        // the documented fallback applies.
+        assertEquals(
+            m1.renderState.viewport.scrolledToEnd(m1.renderState.buffer.size),
+            m1.renderState.viewport,
+        )
+    }
 
     /**
      * Switches to one-minute bars and returns the resulting state.

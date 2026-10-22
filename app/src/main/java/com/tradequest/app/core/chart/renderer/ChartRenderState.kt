@@ -2,6 +2,7 @@ package com.tradequest.app.core.chart.renderer
 
 import com.tradequest.app.core.chart.buffer.CandleBuffer
 import com.tradequest.app.core.chart.coordinates.PriceAxisRange
+import com.tradequest.app.core.chart.crosshair.CrosshairPosition
 import com.tradequest.app.core.chart.timeframe.Timeframe
 import com.tradequest.app.core.chart.viewport.ChartViewport
 
@@ -50,6 +51,14 @@ data class ChartRenderState(
      * Drives the session bands and the weekend separators.
      */
     val simulatedUtcMs: Long?,
+    /**
+     * The crosshair to draw, or null when it is not active (Step 9.5).
+     *
+     * Part of the render state rather than a separate parameter so the debug
+     * observer sees exactly the frame that was drawn — a crosshair that is missing
+     * from `ChartDiagnosticsHook` is a crosshair that cannot be debugged.
+     */
+    val crosshair: CrosshairPosition? = null,
 ) {
     /**
      * Total bars the x-axis must place: revealed candles plus the forming one.

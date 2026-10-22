@@ -8,6 +8,7 @@ import com.tradequest.app.core.chart.renderer.ChartFrameAssembler
 import com.tradequest.app.core.chart.renderer.ChartRenderState
 import com.tradequest.app.core.chart.renderer.ChartStyle
 import com.tradequest.app.core.chart.timeframe.Timeframe
+import com.tradequest.app.core.chart.viewport.ChartTimeframeAnchor
 import com.tradequest.app.core.chart.viewport.ChartViewport
 import com.tradequest.app.core.market.DatasetSummary
 import com.tradequest.app.core.market.HistoricalCandle
@@ -111,6 +112,15 @@ class TradingViewModel(
 
     /** The bucket boundary the current buffer was built for. See the tick loop. */
     private var lastBucketStart: Long? = null
+
+    /**
+     * The moment to keep on screen across a timeframe switch (Step 9.9).
+     *
+     * Captured in [selectTimeframe] from the old buffer and consumed by the next
+     * [publish]. Null means there was nothing to carry over, so the chart opens at
+     * the live edge.
+     */
+    private var pendingCentreUtcMs: Long? = null
 
     /** The poll loop, held so a refresh cannot start a second one. */
     private var tickJob: Job? = null
@@ -239,9 +249,22 @@ class TradingViewModel(
     /** Switches the charted timeframe, re-aggregating from the loaded minutes. */
     fun selectTimeframe(next: Timeframe) {
         if (next == timeframe) return
+
+        // Step 9.9: keep looking at the same *moment* across the switch. The old
+        // viewport is a bar count, which is meaningless on a different timeframe, so
+        // the centre's timestamp is captured now — while the old buffer is still in
+        // hand — and re-applied once the new series has been aggregated. This is
+        // what stops a timeframe switch from silently teleporting the user to an
+        // unrelated point in history.
+        pendingCentreUtcMs = (_state.value as? TradingState.Ready)?.let { ready ->
+            lastViewport?.let { ChartTimeframeAnchor.centreTimestamp(it, ready.renderState.buffer) }
+        }
+
         timeframe = next
-        // The viewport was fitted to the old timeframe's bar count, so it is no
-        // longer meaningful; the next frame opens at the live edge instead.
+        // The viewport itself is no longer meaningful. The centre captured above
+        // replaces it; without a centre (an empty or out-of-range window) the next
+        // frame opens at the live edge, which is the old behaviour and still the
+        // right answer.
         lastViewport = null
         lastBucketStart = null
         val summary = dataset ?: return
@@ -281,7 +304,16 @@ class TradingViewModel(
         val simMs = sessions.currentSimUtcMs()
         lastBucketStart = simMs?.let { timeframe.bucketStartUtcMs(it) }
 
-        val viewport = lastViewport ?: ChartViewport.DEFAULT.scrolledToEnd(openingBarCount(simMs))
+        // Step 9.9: a centre captured by a timeframe switch wins over the live-edge
+        // default. `pendingCentreUtcMs` is read and cleared here, not in
+        // `selectTimeframe`, because the new buffer does not exist until the
+        // assembler has run below — and it must be cleared either way so it cannot
+        // leak into a later, unrelated frame.
+        val centre = pendingCentreUtcMs
+        pendingCentreUtcMs = null
+
+        val viewport = lastViewport
+            ?: ChartViewport.DEFAULT.scrolledToEnd(openingBarCount(simMs))
 
         val renderState = withContext(computeDispatcher) {
             ChartFrameAssembler.build(
@@ -292,6 +324,7 @@ class TradingViewModel(
                 simulatedUtcMs = simMs,
                 viewport = viewport,
                 fallback = LAST_RESORT_RANGE,
+                anchorUtcMs = centre,
             )
         }
         lastViewport = renderState.viewport

@@ -11,6 +11,7 @@ import androidx.compose.ui.unit.Constraints
 import com.tradequest.app.core.chart.coordinates.ChartCoordinateTransformer
 import com.tradequest.app.core.chart.coordinates.PriceAxisTicks
 import com.tradequest.app.core.chart.coordinates.TimeAxisTicks
+import com.tradequest.app.core.chart.crosshair.CrosshairReadout
 import com.tradequest.app.core.chart.timeframe.Timeframe
 import com.tradequest.app.core.simulation.calendar.NewYorkTradingCalendar
 import com.tradequest.app.core.simulation.calendar.SessionClassifier
@@ -84,6 +85,8 @@ class ChartRenderer(
         drawPriceAxis(state, transformer, plotWidthPx, priceAxisWidthPx)
         drawTimeAxis(state, transformer, plotWidthPx, timeAxisHeightPx, bufferWindow)
         drawCurrentPriceLine(state, transformer, plotWidthPx, priceAxisWidthPx)
+        // Last, so the crosshair sits over everything it is being used to read.
+        drawCrosshair(state, transformer, plotWidthPx, plotHeightPx, priceAxisWidthPx)
     }
 
     /** [window] restricted to indices that exist in a buffer of [bufferSize]. */
@@ -488,6 +491,133 @@ class ChartRenderer(
         )
     }
 
+    // ---------- Step 9.5: crosshair ----------
+
+    /**
+     * Dashed lines through the crosshair position, with its price tagged in the
+     * right gutter and its time in the bottom one.
+     *
+     * # Why the tags are drawn here and not by the axes
+     *
+     * The axis ticks are placed on round prices and round times; the crosshair is
+     * wherever the finger is. Its tags therefore have to be drawn by whoever knows
+     * that position, and they must be drawn *over* the axis labels, because a
+     * crosshair tag that hides behind a tick is unreadable exactly when the user
+     * is reading it.
+     */
+    private fun DrawScope.drawCrosshair(
+        state: ChartRenderState,
+        transformer: ChartCoordinateTransformer,
+        plotWidthPx: Float,
+        plotHeightPx: Float,
+        priceAxisWidthPx: Float,
+    ) {
+        val crosshair = state.crosshair ?: return
+        val style = state.style
+
+        // The vertical line follows the bar the crosshair is on, so it stays on
+        // that candle when the chart is panned or zoomed.
+        val x = transformer.xOfIndex(crosshair.index.toFloat())
+        if (x < 0f || x > plotWidthPx) return
+
+        // The horizontal line is at the recorded price. A price outside the window
+        // has no line to draw, but the vertical line and the time tag are still
+        // meaningful, so this is not an early return.
+        val priceInRange = state.priceRange.contains(crosshair.priceUnits)
+        val y = if (priceInRange) transformer.yOfPrice(crosshair.priceUnits) else null
+
+        drawLine(
+            color = style.crosshair,
+            start = Offset(x, 0f),
+            end = Offset(x, plotHeightPx),
+            strokeWidth = CROSSHAIR_WIDTH_PX,
+        )
+        if (y != null) {
+            drawLine(
+                color = style.crosshair,
+                start = Offset(0f, y),
+                end = Offset(plotWidthPx, y),
+                strokeWidth = CROSSHAIR_WIDTH_PX,
+            )
+        }
+
+        drawCrosshairPriceTag(state, plotWidthPx, plotHeightPx, priceAxisWidthPx, y)
+        drawCrosshairTimeTag(state, transformer, x, plotHeightPx)
+    }
+
+    /** The crosshair's price, tagged in the right gutter. */
+    private fun DrawScope.drawCrosshairPriceTag(
+        state: ChartRenderState,
+        plotWidthPx: Float,
+        plotHeightPx: Float,
+        priceAxisWidthPx: Float,
+        y: Float?,
+    ) {
+        if (y == null || priceAxisWidthPx <= 0f) return
+        val crosshair = state.crosshair ?: return
+        val style = state.style
+
+        val measured = textMeasurer.measure(
+            text = PriceAxisTicks.formatPrice(crosshair.priceUnits),
+            style = TextStyle(color = style.background, fontSize = axisFontSize(style)),
+            constraints = Constraints(
+                maxWidth = (priceAxisWidthPx - style.axisLabelPaddingPx).toInt().coerceAtLeast(1),
+            ),
+        )
+        // Kept inside the plot so a tag at either extreme is fully visible.
+        val top = (y - measured.size.height / 2f)
+            .coerceIn(0f, (plotHeightPx - measured.size.height).coerceAtLeast(0f))
+
+        // A filled block behind the text, so the label stays readable over the
+        // axis ticks and the current-price line it may be sitting on.
+        drawRect(
+            color = style.crosshair,
+            topLeft = Offset(plotWidthPx, top),
+            size = Size(priceAxisWidthPx, measured.size.height.toFloat()),
+        )
+        drawText(
+            textLayoutResult = measured,
+            topLeft = Offset(plotWidthPx + style.axisLabelPaddingPx, top),
+        )
+    }
+
+    /** The crosshair's bar time, tagged in the bottom gutter. */
+    private fun DrawScope.drawCrosshairTimeTag(
+        state: ChartRenderState,
+        transformer: ChartCoordinateTransformer,
+        x: Float,
+        plotHeightPx: Float,
+    ) {
+        val crosshair = state.crosshair ?: return
+        val style = state.style
+        val readout = CrosshairReadout.at(state.buffer, state.formingCandle, crosshair.index) ?: return
+
+        val label = if (CrosshairReadout.needsDate(state.timeframe)) {
+            readout.timestampLabel
+        } else {
+            // Intraday: the date is on the axis already, so the tag shows the time.
+            readout.timestampLabel.substringAfter(' ')
+        }
+
+        val measured = textMeasurer.measure(
+            text = label,
+            style = TextStyle(color = style.background, fontSize = axisFontSize(style)),
+        )
+        // Centre on the bar, then clamp so a tag at either edge is not half off.
+        val left = (x - measured.size.width / 2f)
+            .coerceIn(0f, (transformer.plotWidthPx - measured.size.width).coerceAtLeast(0f))
+
+        drawRect(
+            color = style.crosshair,
+            topLeft = Offset(left, plotHeightPx),
+            size = Size(measured.size.width.toFloat(), measured.size.height.toFloat()),
+        )
+        drawText(
+            textLayoutResult = measured,
+            topLeft = Offset(left, plotHeightPx),
+        )
+    }
+
     // ---------- Shared helpers ----------
 
     private fun sessionOf(utcMs: Long): TradingSession? {
@@ -527,6 +657,7 @@ class ChartRenderer(
         const val MIN_BODY_WIDTH_PX: Float = 1f
         const val WEEKEND_SEPARATOR_WIDTH_PX: Float = 1.5f
         const val CURRENT_PRICE_LINE_WIDTH_PX: Float = 1f
+        const val CROSSHAIR_WIDTH_PX: Float = 1f
         const val TIME_TICK_TARGET: Int = 6
         const val PIXELS_PER_PRICE_LABEL: Float = 48f
     }

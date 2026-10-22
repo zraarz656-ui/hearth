@@ -4,6 +4,7 @@ import com.tradequest.app.core.chart.buffer.CandleBuffer
 import com.tradequest.app.core.chart.coordinates.PriceAxisRange
 import com.tradequest.app.core.chart.timeframe.Timeframe
 import com.tradequest.app.core.chart.timeframe.TimeframeAggregator
+import com.tradequest.app.core.chart.viewport.ChartTimeframeAnchor
 import com.tradequest.app.core.chart.viewport.ChartViewport
 import com.tradequest.app.core.market.HistoricalCandle
 import com.tradequest.app.core.simulation.path.MarketPathWindow
@@ -42,6 +43,11 @@ object ChartFrameAssembler {
      * @param simulatedUtcMs the simulated instant, or null for a historical view.
      * @param viewport the viewport to honour. It is clamped to the bar count, so a
      *   caller may pass one carried over from a larger buffer.
+     * @param anchorUtcMs a moment to keep at the centre of the window (Step 9.9),
+     *   or null to use [viewport] as given. Used after a timeframe switch, when the
+     *   viewport is a bar count that no longer means anything and only the moment
+     *   is worth keeping. It is resolved here, against the buffer this call builds,
+     *   so the new series is aggregated once rather than twice.
      * @param fallback used only when no visible candle yields a price.
      */
     fun build(
@@ -52,6 +58,7 @@ object ChartFrameAssembler {
         simulatedUtcMs: Long?,
         viewport: ChartViewport,
         fallback: PriceAxisRange,
+        anchorUtcMs: Long? = null,
     ): ChartRenderState {
         val buffer: CandleBuffer
         val forming: FormingCandleView?
@@ -76,7 +83,21 @@ object ChartFrameAssembler {
             }
         }
 
-        val clamped = viewport.clampedToData(buffer.size + if (forming != null) 1 else 0)
+        val totalBars = buffer.size + if (forming != null) 1 else 0
+
+        // Step 9.9: an anchor overrides the incoming viewport's position. It is
+        // resolved here so the switch aggregates once. A null result means the moment
+        // is outside the new series, so the live-edge viewport stands.
+        val anchored = anchorUtcMs?.let { moment ->
+            ChartTimeframeAnchor.viewportAt(
+                centreUtcMs = moment,
+                nextBuffer = buffer,
+                barsVisible = viewport.barsVisible,
+                rightPaddingBars = viewport.rightPaddingBars,
+            )
+        } ?: viewport
+
+        val clamped = anchored.clampedToData(totalBars)
         val priceRange = priceRangeFor(buffer, forming, clamped, fallback)
 
         return ChartRenderState(

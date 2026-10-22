@@ -12,13 +12,14 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.tradequest.app.core.chart.gestures.ChartGestureController
+import com.tradequest.app.core.chart.renderer.ChartAutoScale
 import com.tradequest.app.core.chart.renderer.ChartRenderState
 import com.tradequest.app.core.chart.renderer.ChartRenderer
 import com.tradequest.app.core.chart.viewport.ChartViewport
@@ -121,10 +122,46 @@ fun CandlestickChart(
             val plotWidthPx = size.width - priceAxisPx
             val plotHeightPx = size.height - timeAxisPx
 
-            // Draw the plot in its own coordinate space by translating past the
-            // price gutter, so the renderer works from the plot's top-left corner.
-            translate(left = priceAxisPx, top = 0f) {
-                val drawn = latestState.copy(viewport = viewport)
+            // Nothing drawn outside the plot may reach the screen. The price axis
+            // draws its labels in the right-hand gutter, past `plotWidthPx`, and
+            // the time axis draws below `plotHeightPx`; both are deliberately
+            // outside the plot rectangle, and both would otherwise paint over
+            // whatever the parent laid out beneath the chart — the timeframe chips
+            // above and the navigation bar below.
+            //
+            // Clipping to the whole canvas rather than to the plot is what keeps
+            // the gutters visible while still bounding every mark to this
+            // composable. The earlier layout had no clip at all, so a zoomed chart
+            // drew its axis text straight over the chips and the bottom bar.
+            clipRect(left = 0f, top = 0f, right = size.width, bottom = size.height) {
+                // Auto-scale fits the price axis to the bars actually on screen,
+                // and "on screen" is the viewport being drawn right now — which
+                // only this lambda knows. The range handed in was fitted to
+                // whatever viewport the last published frame used, so after a
+                // zoom it is stale, and a stale range maps visible prices to
+                // y < 0 or y > plotHeight: candles drawn above and below the
+                // plot, straight over the timeframe chips and the bottom bar.
+                //
+                // Re-fitting here is a read over the visible window — a hundred
+                // or so bars — not a re-aggregation, so it costs nothing per
+                // frame and cannot race with the state.
+                //
+                // Honours `autoScale`: a manually scaled axis (Step 9.7) keeps
+                // the range it was given.
+                val seeded = latestState.copy(viewport = viewport)
+                val drawn = if (viewport.autoScale) {
+                    seeded.copy(
+                        priceRange = ChartAutoScale.priceRangeForViewport(
+                            buffer = seeded.buffer,
+                            forming = seeded.formingCandle,
+                            viewport = viewport,
+                            totalBars = seeded.totalBars,
+                            fallback = seeded.priceRange,
+                        ),
+                    )
+                } else {
+                    seeded
+                }
                 // Debug-only observer; null in release. Reports the viewport as
                 // drawn, which is what pan/zoom debugging needs.
                 ChartDiagnosticsHook.onDraw?.invoke(drawn)

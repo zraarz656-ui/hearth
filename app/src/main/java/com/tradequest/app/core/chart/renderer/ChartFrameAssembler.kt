@@ -102,24 +102,11 @@ object ChartFrameAssembler {
         forming: FormingCandleView?,
         viewport: ChartViewport,
         fallback: PriceAxisRange,
-    ): PriceAxisRange {
-        val window = viewport.visibleWindow(buffer.size + if (forming != null) 1 else 0)
-
-        // An empty buffer means the only bar on screen is the forming one, and
-        // IntRange.EMPTY makes the two accessors return null rather than read.
-        val bufferWindow = if (buffer.size == 0) {
-            IntRange.EMPTY
-        } else {
-            window.first.coerceAtLeast(0)..window.last.coerceAtMost(buffer.size - 1)
-        }
-
-        return ChartAutoScale.priceRange(
-            visibleWindow = bufferWindow,
-            lowOf = { range -> buffer.lowestLow(range.first, range.last) },
-            highOf = { range -> buffer.highestHigh(range.first, range.last) },
-            formingLow = forming?.lowUnits?.toFloat(),
-            formingHigh = forming?.highUnits?.toFloat(),
-            fallback = fallback,
-        )
-    }
+    ): PriceAxisRange = ChartAutoScale.priceRangeForViewport(
+        buffer = buffer,
+        forming = forming,
+        viewport = viewport,
+        totalBars = buffer.size + if (forming != null) 1 else 0,
+        fallback = fallback,
+    )
 }

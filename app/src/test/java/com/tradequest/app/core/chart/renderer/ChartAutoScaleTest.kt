@@ -1,6 +1,9 @@
 package com.tradequest.app.core.chart.renderer
 
+import com.tradequest.app.core.chart.ChartFixtures
+import com.tradequest.app.core.chart.buffer.CandleBuffer
 import com.tradequest.app.core.chart.coordinates.PriceAxisRange
+import com.tradequest.app.core.chart.viewport.ChartViewport
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -100,5 +103,90 @@ class ChartAutoScaleTest {
             fallback = fallback,
         )
         assertEquals(3..7, seen)
+    }
+
+    // ---------- priceRangeForViewport (draw-time auto-scale) ----------
+
+    /** Sixty bars in two clearly separated price bands: 0..9 low, 50..59 high. */
+    private fun twoBandBuffer(): CandleBuffer {
+        val candles = (0 until 60).map { i ->
+            val base = if (i < 10) 2_000_000 else if (i < 50) 2_010_000 else 2_050_000
+            ChartFixtures.candle(i, open = base, close = base + 100, high = base + 200, low = base - 200)
+        }
+        return CandleBuffer.of(candles)
+    }
+
+    @Test
+    fun `the range follows the viewport rather than the whole buffer`() {
+        val buffer = twoBandBuffer()
+        val fallbackRange = PriceAxisRange.around(2_000_000f)
+
+        // A window over the cheap bars only.
+        val lowBand = ChartAutoScale.priceRangeForViewport(
+            buffer = buffer,
+            forming = null,
+            viewport = ChartViewport(
+                barsVisible = 10f,
+                firstVisibleIndex = 0f,
+                rightPaddingBars = 0f,
+            ),
+            totalBars = buffer.size,
+            fallback = fallbackRange,
+        )
+
+        // A window over the expensive bars only. The viewport draws two bars of
+        // buffer either side, so the window must start far enough into the band
+        // that the padding does not reach the mid-band bars at 48..49.
+        val highBand = ChartAutoScale.priceRangeForViewport(
+            buffer = buffer,
+            forming = null,
+            viewport = ChartViewport(
+                barsVisible = 5f,
+                firstVisibleIndex = 54f,
+                rightPaddingBars = 0f,
+            ),
+            totalBars = buffer.size,
+            fallback = fallbackRange,
+        )
+
+        // The two windows must produce different scales. If the range came from the
+        // whole buffer both would be identical, and a zoomed-in chart would draw its
+        // candles against a scale fitted to a window it is not showing — the bug
+        // that let candles paint outside the plot.
+        assertTrue(
+            "the two viewports produced the same range; the buffer is being scaled, not the window",
+            kotlin.math.abs(lowBand.maxUnits - highBand.maxUnits) > 1_000f,
+        )
+        assertTrue("the low window's top reaches the expensive band", lowBand.maxUnits < 2_020_000f)
+        assertTrue("the high window's bottom is above the cheap band", highBand.minUnits > 2_040_000f)
+    }
+
+    @Test
+    fun `a viewport panned past the data falls back rather than reading out of bounds`() {
+        val buffer = twoBandBuffer()
+        val range = ChartAutoScale.priceRangeForViewport(
+            buffer = buffer,
+            forming = null,
+            viewport = ChartViewport(
+                barsVisible = 10f,
+                firstVisibleIndex = 10_000f,
+                rightPaddingBars = 0f,
+            ),
+            totalBars = buffer.size,
+            fallback = fallback,
+        )
+        assertEquals(fallback, range)
+    }
+
+    @Test
+    fun `an empty buffer falls back instead of indexing the arrays`() {
+        val range = ChartAutoScale.priceRangeForViewport(
+            buffer = CandleBuffer.EMPTY,
+            forming = null,
+            viewport = ChartViewport.DEFAULT,
+            totalBars = 0,
+            fallback = fallback,
+        )
+        assertEquals(fallback, range)
     }
 }

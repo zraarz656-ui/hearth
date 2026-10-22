@@ -1807,6 +1807,40 @@ the forming candle's index (one past the last closed bar) throws.
 and folds the forming candle's high and low in separately. `PriceAxisRange`
 needs `maxUnits > minUnits` and uses `minUnits`/`maxUnits`, not `low`/`high`.
 
+`ChartAutoScale.priceRangeForViewport` is that same computation, over a buffer
+and a viewport rather than a dataset. `ChartFrameAssembler` delegates to it, so
+there is one implementation of "what price range does this viewport show".
+
+### Auto-scale is re-fitted at draw time, not on publish
+
+The price axis spans the *visible* extremes, and the visible window is the
+viewport the chart is drawing right now — which only the draw lambda knows.
+The range carried on `ChartRenderState` was fitted to the viewport of whatever
+frame was last *published*, so after a zoom or a pan it is stale. A stale range
+is not cosmetic: `yOfPrice` maps a price above `maxUnits` to a negative `y` and
+one below `minUnits` to `y > plotHeightPx`, so candles are drawn above and below
+the plot.
+
+`CandlestickChart` therefore re-fits the range from the drawn viewport, honouring
+`ChartViewport.autoScale` (so a manual scale, Step 9.7, keeps its range). It is a
+read over the visible window — a hundred or so bars — not a re-aggregation, so it
+is cheap enough for every frame. Recomputing it in `onViewportChanged` instead
+would mean a coroutine and a state write per gesture frame whose completions can
+arrive out of order.
+
+### A Canvas does not clip; the chart must clip itself
+
+Compose `Canvas` does not clip its draw commands to its bounds. The axis gutters
+are deliberately outside the plot rectangle, and a stale price range can place
+candles outside it too, so without an explicit `clipRect` the chart paints over
+the timeframe chips above it and the navigation bar below. `CandlestickChart`
+clips to its own size, which keeps the gutters visible and bounds everything else.
+
+Regression tests: `ChartAxisPlacementTest` reads rendered pixels back, which is
+the only way to see a layout bug — a draw pass that throws nothing passes every
+"does it render" test. `ChartAutoScaleTest.the range follows the viewport rather
+than the whole buffer` pins the draw-time re-fit.
+
 ### A light republish must read the latest viewport, not the last frame's
 
 `refreshFormingCandle` runs on every tick that changes the forming candle. It

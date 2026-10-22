@@ -260,6 +260,13 @@ class TradingViewModel(
      *
      * Called by the chart after a gesture, so a clock tick does not snap the view
      * back to the live edge while the trader is looking at older candles.
+     *
+     * The price axis is *not* recomputed here. Auto-scale fits the axis to the
+     * visible extremes, and the chart re-fits it at draw time from the viewport it
+     * is about to draw (see `CandlestickChart`). Doing it here instead would mean a
+     * coroutine and a state write per gesture frame — about sixty a second — whose
+     * completions can arrive out of order and briefly show the previous frame's
+     * scale.
      */
     fun onViewportChanged(viewport: ChartViewport) {
         lastViewport = viewport

@@ -41,9 +41,11 @@ class ChartRenderer(
     /**
      * Draws one frame.
      *
-     * [plotWidthPx] and [plotHeightPx] exclude the axis gutters, so every
-     * coordinate here is relative to the plot's top-left corner. The caller
-     * translates the canvas to account for the gutters before calling.
+     * [plotWidthPx] and [plotHeightPx] exclude the axis gutters. Every coordinate
+     * here is measured from the *plot's* top-left corner: `x = 0` is the plot's
+     * left edge and `x = plotWidthPx` its right edge, which is where the price
+     * gutter begins. The caller does not translate; the renderer draws the
+     * gutters itself, so it needs the plot width to place them.
      */
     fun DrawScope.draw(
         state: ChartRenderState,
@@ -69,7 +71,7 @@ class ChartRenderer(
         val bufferWindow = clampToBuffer(visibleSlots, state.buffer.size)
 
         if (visibleSlots.isEmpty()) {
-            drawPriceAxis(state, transformer, priceAxisWidthPx)
+            drawPriceAxis(state, transformer, plotWidthPx, priceAxisWidthPx)
             return
         }
 
@@ -79,9 +81,9 @@ class ChartRenderer(
             drawGrid(state, transformer, plotWidthPx, plotHeightPx, bufferWindow)
         }
         drawCandles(state, transformer, bufferWindow, visibleSlots)
-        drawPriceAxis(state, transformer, priceAxisWidthPx)
+        drawPriceAxis(state, transformer, plotWidthPx, priceAxisWidthPx)
         drawTimeAxis(state, transformer, plotWidthPx, timeAxisHeightPx, bufferWindow)
-        drawCurrentPriceLine(state, transformer, plotWidthPx)
+        drawCurrentPriceLine(state, transformer, plotWidthPx, priceAxisWidthPx)
     }
 
     /** [window] restricted to indices that exist in a buffer of [bufferSize]. */
@@ -356,18 +358,22 @@ class ChartRenderer(
     private fun DrawScope.drawPriceAxis(
         state: ChartRenderState,
         transformer: ChartCoordinateTransformer,
+        plotWidthPx: Float,
         priceAxisWidthPx: Float,
     ) {
         if (priceAxisWidthPx <= 0f) return
         val style = state.style
         val textStyle = TextStyle(color = style.axisText, fontSize = axisFontSize(style))
 
-        // The vertical separator sits on the gutter/plot boundary, which is x = 0
-        // in this translated space.
+        // The vertical separator sits on the plot/gutter boundary, which is
+        // x = plotWidthPx in this coordinate space. The price gutter is on the
+        // right, which is where every trading terminal puts it: the newest
+        // candles are on the right, and the eye reads the latest price against a
+        // scale it does not have to cross the chart to find.
         drawLine(
             color = style.axisLine,
-            start = Offset(0f, 0f),
-            end = Offset(0f, transformer.plotHeightPx),
+            start = Offset(plotWidthPx, 0f),
+            end = Offset(plotWidthPx, transformer.plotHeightPx),
             strokeWidth = style.gridWidthPx,
         )
 
@@ -380,13 +386,13 @@ class ChartRenderer(
                 style = textStyle,
                 constraints = Constraints(maxWidth = (priceAxisWidthPx - style.axisLabelPaddingPx).toInt().coerceAtLeast(1)),
             )
-            // Labels live in the gutter to the *left* of x = 0. Without the
-            // negative offset they are drawn on top of the candles, which is
-            // what a probe of the rendered frame showed before this was fixed.
+            // Labels live in the gutter to the *right* of the plot. Drawing them
+            // at the plot edge instead would put them on top of the newest
+            // candles, which are exactly the ones a trader is reading.
             val top = y - measured.size.height / 2f
             drawText(
                 textLayoutResult = measured,
-                topLeft = Offset(-priceAxisWidthPx + style.axisLabelPaddingPx, top),
+                topLeft = Offset(plotWidthPx + style.axisLabelPaddingPx, top),
             )
         }
     }
@@ -437,7 +443,8 @@ class ChartRenderer(
     // ---------- Current price ----------
 
     /**
-     * A horizontal line at the newest known price.
+     * A horizontal line at the newest known price, with its price tagged in the
+     * right-hand gutter.
      *
      * Uses the forming candle's close when one exists, because that is the price
      * the trader is watching, and the last revealed close otherwise.
@@ -446,6 +453,7 @@ class ChartRenderer(
         state: ChartRenderState,
         transformer: ChartCoordinateTransformer,
         plotWidthPx: Float,
+        priceAxisWidthPx: Float,
     ) {
         val price = state.formingCandle?.closeUnits?.toFloat()
             ?: state.buffer.takeIf { !it.isEmpty }?.closes?.get(state.buffer.size - 1)
@@ -454,11 +462,29 @@ class ChartRenderer(
         if (!state.priceRange.contains(price)) return
 
         val y = transformer.yOfPrice(price)
+        val style = state.style
         drawLine(
-            color = state.style.currentPriceLine,
+            color = style.currentPriceLine,
             start = Offset(0f, y),
             end = Offset(plotWidthPx, y),
             strokeWidth = CURRENT_PRICE_LINE_WIDTH_PX,
+        )
+
+        // The tag goes in the gutter beside the line. Without it the line says
+        // "here" but not "at what price", and the axis ticks are too sparse to
+        // read the current price off one of them.
+        if (priceAxisWidthPx <= 0f) return
+        val label = PriceAxisTicks.formatPrice(price)
+        val measured = textMeasurer.measure(
+            text = label,
+            style = TextStyle(color = style.currentPriceLine, fontSize = axisFontSize(style)),
+            constraints = Constraints(maxWidth = (priceAxisWidthPx - style.axisLabelPaddingPx).toInt().coerceAtLeast(1)),
+        )
+        val top = (y - measured.size.height / 2f)
+            .coerceIn(0f, (transformer.plotHeightPx - measured.size.height).coerceAtLeast(0f))
+        drawText(
+            textLayoutResult = measured,
+            topLeft = Offset(plotWidthPx + style.axisLabelPaddingPx, top),
         )
     }
 

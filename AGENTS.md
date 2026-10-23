@@ -2145,6 +2145,14 @@ Android build (unit tests, assembleDebug, compileReleaseKotlin, lint). The
 documentation job checks out with `fetch-depth: 0`, because the git
 cross-reference needs commit subjects; a shallow clone would silently weaken it.
 
+First run, on `4a77c90`, failed: the Android job died inside
+`android-actions/setup-android@v3`, which tries to install the legacy `tools`
+package that no longer exists in cmdline-tools 16 (`Failed to find package
+'tools'`, sdkmanager exit 1), so Gradle never ran. The runner image already
+ships the SDK, so the action is gone and the job installs only the pinned
+platform itself. `sort -V` picks the cmdline-tools directory, because a lexical
+sort would rank `9.0` above `16.0`. Green on `4fe72d2`, all three jobs.
+
 **`tools/check_price_scale.py` is deliberately not in the workflow.** It fails
 on a clean checkout (three `division by 100` hits in `MoneyMath.kt` and
 `ReplayNotifications.kt`) — verified by stashing and re-running at `HEAD`. Wiring

@@ -2060,3 +2060,102 @@ keeping the newest 256 KB at a line boundary.
 in this environment (no `/dev/kvm`), so the layout, the button row wrapping on a
 narrow phone, and the toast behaviour are unconfirmed by me. Compilation, the
 manifest merge, and release isolation are verified; the pixels are not.
+
+
+## PHASE DOCUMENTATION: FOUR BACKFILLED SECTIONS, AND A CHECK (2026-10-22)
+
+### What was missing
+
+`docs/development-progress.md` documented Phases 0-5 and 7. Four phases were
+absent or unreported:
+
+| Phase | Commit | Gap |
+|---|---|---|
+| 6 | `de40431` | No section, no report. The only phase commit that did not touch the file. |
+| 7 | `b22f602` | Section present, no completion report. |
+| 8 | `c016bd5`..`c7f5020` | No section, no report. |
+| 9 | `025e12e` | No section, no report. |
+
+All four are now documented, with a `PHASE COMPLETION REPORT` block each. The
+backfilled sections say so at the top, so a later reader does not mistake a
+reconstruction for a contemporaneous record.
+
+### Why it happened
+
+Phase 6's commit did not update the progress doc - the only phase commit that
+did not. Phase 7 then wrote its own section against whatever preceded it, which
+was Phase 5, and the heading sequence 5 -> 7 read as continuous. Phase 8 and
+Phase 9 repeated it. Nothing in the workflow *checked*, so nothing noticed:
+AGENTS.md section 17 says "update documentation" and section 20 says "produce a
+PHASE COMPLETION REPORT", but both are manual steps at the end of a long phase.
+
+### `tools/check_phase_reports.py`
+
+Run it with:
+
+```
+python3 tools/check_phase_reports.py
+```
+
+It checks three things:
+
+1. **Contiguity.** The `## Phase N` headings run 0, 1, 2, ... with no gaps, no
+   duplicates and no reordering. A missing heading is the Phase 6 failure mode,
+   and it is invisible to any check that inspects phases individually.
+2. **Completeness.** Every section whose heading says COMPLETE carries a
+   `PHASE COMPLETION REPORT` block with all twelve fields from section 20.
+   Phases 0-5 predate the convention and are exempt, listed explicitly in
+   `REPORT_EXEMPT_PHASES` rather than inferred.
+3. **No committed phase is undocumented.** Contiguity cannot see a phase missing
+   from the *end* of the document - a file that stops at Phase 8 has no gap.
+   Commit subjects (`Phase 9: ...`) do encode it, so they are cross-referenced.
+   Without git, the check degrades to document-only instead of failing.
+
+Tests: `python3 -m unittest discover -s tools/tests -t .` (12 tests). Most are
+negative - they remove a section, a report, or a single field and assert the
+check fails - because a test that only passes on the current correct document
+would not prove the check can fail.
+
+### Enforcement: the hook and the workflow (2026-10-22)
+
+The check on its own only runs when someone remembers it. Two things run it
+automatically:
+
+**`.githooks/pre-commit`** — blocks a commit that would leave the phase
+document broken. It reads the **staged blob** (`git show :docs/...`), not the
+working tree: a file staged in part differs from what is on disk, and checking
+the working tree would pass a commit whose staged content is still broken. The
+hook is a tracked file in `.githooks/` rather than an edit to `.git/hooks/`,
+because `.git/` is not cloned — a hook kept there would protect one machine.
+
+Enable it once per clone:
+
+```
+git config core.hooksPath .githooks
+```
+
+It skips silently when the progress document is not in the commit, when
+`python3` is absent, or when the check script is missing, so it cannot wedge a
+clone that lacks the tooling. `git commit --no-verify` bypasses it deliberately.
+
+**`.github/workflows/checks.yml`** — the backstop for a clone that never set
+`core.hooksPath`, and for a `--no-verify` commit. Three jobs: phase
+documentation (plus the check's own tests), the Dukascopy tooling tests, and the
+Android build (unit tests, assembleDebug, compileReleaseKotlin, lint). The
+documentation job checks out with `fetch-depth: 0`, because the git
+cross-reference needs commit subjects; a shallow clone would silently weaken it.
+
+**`tools/check_price_scale.py` is deliberately not in the workflow.** It fails
+on a clean checkout (three `division by 100` hits in `MoneyMath.kt` and
+`ReplayNotifications.kt`) — verified by stashing and re-running at `HEAD`. Wiring
+a known-red check into CI would make the pipeline red from its first run and
+teach everyone to ignore it. Fix the check or the three call sites first, then
+add the job.
+
+### Still open
+
+`tools/check_price_scale.py` fails on a clean checkout, as noted above. Those
+divisions are a fraction-of-a-dollar formatting path, not a price scale, but the
+check's heuristic cannot tell them apart. Either the check needs to distinguish
+them or the three sites need a suppression; that is a separate decision, and it
+is the one thing blocking that job from joining the workflow.

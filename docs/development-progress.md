@@ -725,6 +725,191 @@ path, plus the money primitives in `core/accounting/`.
 
 ---
 
+## Phase 6 — Accounting, margin, risk and position sizing — COMPLETE
+
+Delivered `core/accounting/` and `core/risk/`, plus the margin arithmetic in
+`core/trading/`, and wired risk enforcement into the Phase 5 engine.
+
+> **Backfilled 2026-10-22.** Phase 6 shipped in `de40431` with no progress-doc
+> section and no completion report. It was the only phase whose commit did not
+> touch this file, so Phase 7 was written against Phase 5 and the hole went
+> unnoticed. The content below is reconstructed from the commit, the current
+> code, and the Phase 6 hard rules in `AGENTS.md`; the verification figures are
+> re-run rather than quoted from memory.
+
+### Implemented
+
+- **Money representation (6.1).** Micro-dollars in a `Long`
+  (`MoneyScale.MICROS_PER_USD`). Price thousandths to micro-dollars is a
+  multiply by 1000, and both are powers of ten, so the conversion is exact with
+  no rounding and no remainder. `CheckedMath.add`/`subtract`/`multiply`/
+  `multiplyDivide` wrap each operation and raise on overflow, carrying the
+  operation name so a failure says *what* overflowed. All money multiplication
+  widens to `Long` first: the plan's Int32 ceiling is reached after roughly a
+  21 USD move at 1 lot, and gold moves 20–40 USD a day.
+- **Lot representation (6.2).** Integer hundredths of a lot; 0.20 lots is
+  `20` lot units.
+- **PnL (6.3).** `AccountMath.realizedPnlMicros` accounts for side, entry price,
+  exit price and lot size. Spread, slippage and commission reach it through the
+  executable prices and commission figures the engine supplies, not by
+  re-deriving them.
+- **Equity (6.4).** `equityMicros = balanceMicros + unrealizedPnlMicros`. The
+  entry commission leaves the balance when the position opens; the close adds
+  gross PnL minus the exit commission only. The round trip is charged once.
+- **Margin (6.5).** `MarginMath.marginMicrosFor` — gold price x 100 x lots / 100,
+  using the executable price for the side.
+- **Margin level (6.6).** `MarginMath.marginLevelPercent` = equity / used margin
+  x 100, returning `null` when nothing is open.
+- **Warning (6.7).** At or below 100%.
+- **Stop-out (6.8).** `MarginMath.stopOutOrder` identifies the largest unrealized
+  dollar loser; the engine closes it, re-evaluates, and closes again until the
+  level is restored or the segment guard is hit.
+- **Daily loss (6.9).** Resets at 17:00 New York. Reference is equity at the
+  rollover; floor is `dayStartEquity x 0.97`. Breaching it flattens positions,
+  cancels pending orders, locks new trading and records one strike.
+- **Overall loss (6.10).** Starting balance $10,000, static floor $9,000.
+  Reaching the floor fails the challenge.
+- **Position sizing (6.11).** `PositionSizing.size` accounts for stop distance,
+  spread, commission, entry side, a planned slippage allowance, minimum lot, lot
+  step and available margin. It rounds the size **down**.
+- **Tests (6.12).** 56 tests across four suites plus `RiskFixtures`.
+
+### Files created
+
+- `core/accounting/AccountMath.kt`
+- `core/trading/MarginMath.kt`, `core/trading/RiskPort.kt`
+- `core/risk/RiskRules.kt`, `PositionSizing.kt`, `PropFirmRiskPolicy.kt`
+- `core/accounting/AccountMathTest.kt`
+- `core/risk/RiskRulesTest.kt`, `PositionSizingTest.kt`, `RiskIntegrationTest.kt`,
+  `RiskFixtures.kt`
+
+### Files modified
+
+- `core/trading/TradingEngine.kt` — `evaluateRisk` per segment, the stop-out
+  re-evaluation loop, and the daily-floor and challenge-failure paths.
+- `core/trading/TradingTypes.kt` — the risk verdict and risk snapshot types.
+- `AGENTS.md` — the Phase 6 hard rules.
+
+### Decisions worth recording
+
+- **The engine cannot import `core.risk`.** `core.risk` depends on
+  `core.trading`, so the engine calls risk through the `RiskPolicy` port and the
+  implementation stays in `core.risk`. Position-level arithmetic both sides need
+  lives in `core.trading/MarginMath.kt`: arithmetic in `trading`, thresholds in
+  `risk`. An engine import of `core.risk` would close the cycle.
+- **Risk runs last in the segment, and the engine re-asks after each
+  liquidation.** Running it last means it sees the balance the segment actually
+  produced. Step 6.8's "repeat if necessary" falls out of re-evaluation rather
+  than a loop that closes everything at once.
+- **`RiskSnapshot.atSimUtcMs` is the segment end, not the processed time.** The
+  policy derives the trading day from it, so passing the segment start would
+  roll the day one segment late.
+- **A locked day blocks exposure, not exits.** `TRADING_DAY_LOCKED` applies to
+  `PlaceOrder` only; closes, cancels and modifications still go through, because
+  a loss limit that trapped the user in the position would be worse than no
+  limit. A failed challenge blocks everything.
+- **Zero used margin means a null margin level**, not zero and not infinity.
+  Zero would trip the warning and the stop-out with no position open; infinity
+  would need a `Long` sentinel.
+- **The daily floor strikes once per day.** Strikes accumulate across days; the
+  day lock clears at the 17:00 rollover, the strike count does not. Without
+  this, one bad day would exhaust the three-strike allowance by itself.
+- **The static floor is checked before the daily floor.** At $9,000 the
+  challenge has failed outright, which is terminal; testing the daily floor
+  first would report a mere day lock for an account that had actually failed.
+  Failure is also the one state a rollover does not clear.
+- **Position sizing rounds down and refuses rather than rounds up.**
+  `PositionSizeResult.TooSmall` is returned when the budget cannot cover the
+  minimum size. Rounding up would exceed the stated risk, which Step 6.11
+  forbids. `roundedDown` is true when the division left a remainder *or* the lot
+  step cut further, because testing the integer division against the stepped
+  value alone can never detect the remainder.
+- **Risk tests widen the limits they are not testing.** With the real 3% daily
+  limit, a position large enough to approach a stop-out breaches the daily floor
+  first and is flattened before the stop-out is visible, so tests targeting one
+  rule pass a `RiskLimits` widening the others. The plan's figures are the
+  defaults, not the only values.
+
+### Verification
+
+- At commit `de40431`: 514 test methods, 56 new over Phase 5's 458.
+- Re-run 2026-10-22 on the current tree: `tests=899 failures=0 errors=0`, of
+  which the four Phase 6 suites contribute 56 and all pass.
+- `:app:assembleDebug` succeeds; `:app:lintDebug` reports 0 errors.
+- The merged manifest still declares no `android.permission.INTERNET`.
+
+### Unverified requirements
+
+- **No swap or rollover financing is charged.** The plan gives no rate, and
+  `TradingContext.swapMicrosPerLotPerDay` defaults to zero, so the omission is
+  explicit rather than buried.
+- **No real economic calendar backs the news spread.** Release instants are
+  supplied to the engine; none are imported. That is Phase 10.
+- **Slippage is modelled, not measured.** The 200–1,000 unit range is the
+  plan's figure, deterministic but not calibrated against real fills.
+- **Every risk test builds synthetic candles.** No real dataset has been
+  replayed through the risk path end to end.
+- **The stop-out repeat is bounded by a segment guard** (`MAX_SEGMENT_STEPS`)
+  rather than proved to terminate. In a pathological segment the guard, not the
+  margin level, would end the loop.
+- **No margin, equity or stop-out figure has been shown on a device.** The
+  accounting is correct in test but has no UI until Phase 8 onwards.
+
+### Phase completion report
+
+```
+PHASE COMPLETION REPORT
+
+Phase: 6 — Accounting, margin, risk and position sizing
+Status: COMPLETE
+
+Implemented:
+- Micro-dollar money with checked Long arithmetic and exact thousandths scaling
+- Lot units as integer hundredths
+- Realized/unrealized PnL, equity, single round-trip commission
+- Required margin, margin level with null-on-zero, 100% warning, 50% stop-out
+- Daily loss floor (17:00 New York reset, one strike per day)
+- Static $9,000 challenge floor, checked before the daily floor
+- Downward-rounding position sizing that refuses rather than rounds up
+- 56 tests across four suites
+
+Files Created:
+- core/accounting/AccountMath.kt
+- core/trading/MarginMath.kt, core/trading/RiskPort.kt
+- core/risk/RiskRules.kt, PositionSizing.kt, PropFirmRiskPolicy.kt
+- core/accounting/AccountMathTest.kt
+- core/risk/RiskRulesTest.kt, PositionSizingTest.kt, RiskIntegrationTest.kt, RiskFixtures.kt
+
+Files Modified:
+- core/trading/TradingEngine.kt, core/trading/TradingTypes.kt, AGENTS.md
+
+Build Result:
+- :app:assembleDebug succeeds
+
+Tests Executed:
+- 514 at the Phase 6 commit (56 new); 899 on the current tree
+
+Tests Passed:
+- 899
+
+Tests Failed:
+- 0
+
+Known Issues:
+- Stop-out termination relies on a segment guard, not a proof
+- No swap/financing charge (no rate in the plan)
+
+Unverified Requirements:
+- No real economic calendar; no real dataset replayed through risk
+- Slippage modelled, not calibrated
+- No risk figure ever displayed on a device
+
+Next Phase:
+- Phase 7 — Replay processor and reliable persistence
+```
+
+---
+
 ## Phase 7 — Replay processor and reliable persistence — COMPLETE
 
 Delivered `core/replay/` plus the persistence and platform pieces that make a
@@ -876,3 +1061,386 @@ background.
 - **A multi-day catch-up is tested only across a synthetic gap.** The plan's
   "multi-day catch-up" is exercised as a several-hour gap, not a real weekend of
   market closure.
+
+
+### Phase completion report
+
+```
+PHASE COMPLETION REPORT
+
+Phase: 7 — Replay processor and reliable persistence
+Status: COMPLETE
+
+Implemented:
+- ReplayProcessor driving the Phase 4 path and the Phase 5/6 engine over the
+  interval a season owes, from the persisted cursor to a target instant
+- ReplayState checkpoints persisting cursor, orders, positions, executions,
+  closed trades, balance and challenge state as one row keyed by season
+- ReplayStateCodec owning the on-disk format as its own DTOs, separate from the
+  domain models
+- Catch-up coordinator with a one-shot resume and a flow form, both clamping the
+  clock to what was actually processed
+- ReplayCatchUpWorker, the WorkManager entry point, with notification gating
+
+Files Created:
+- core/replay/ReplayProcessor.kt, ReplayState.kt, ReplayStateCodec.kt, and the
+  catch-up coordinator
+- platform worker and notification pieces for the background entry point
+- core/replay tests including the flow-clamping regression
+
+Files Modified:
+- core/trading/TradingEngine.kt and persistence accessors to expose the
+  resumable state
+
+Build Result:
+- :app:assembleDebug succeeds
+
+Tests Executed:
+- 563 at the Phase 7 commit (49 new over Phase 6's 514); 899 on the current tree
+
+Tests Passed:
+- 899
+
+Tests Failed:
+- 0
+
+Known Issues:
+- resumeAsFlow previously committed the clock to the target rather than to what
+  was processed; fixed, regression-tested
+- Lint cannot see the notification permission check; suppressed with a comment
+
+Unverified Requirements:
+- No worker, notification or multi-day catch-up has run on a device
+- Notification body text is hardcoded English; the app is not localizable
+- No real dataset has been replayed end to end
+- Nothing consumes ReplayProgress yet
+
+Next Phase:
+- Phase 8 — Custom professional chart rendering
+```
+
+> **Report backfilled 2026-10-22.** Phase 7 had a full progress section but no
+> completion report; `tools/check_phase_reports.py` found it.
+
+---
+
+## Phase 8 — Custom professional chart rendering — COMPLETE
+
+Delivered `core/chart/` and `ui/chart/`, plus the Trading screen and its
+clock-following ViewModel.
+
+> **Backfilled 2026-10-22.** Phase 8 shipped across ten commits (`c016bd5`
+> ..`c7f5020`) with no progress-doc section and no completion report. The
+> section below is reconstructed from those commits, the current code, and the
+> Phase 8 hard rules in `AGENTS.md`.
+
+### Implemented
+
+- **Chart architecture (8.1).** The chart is split into a pure
+  `core/chart/` (buffer, viewport, coordinates, renderer, timeframes) and a thin
+  Compose `ui/chart/CandlestickChart`. The core is testable without a device;
+  the composable owns only gesture plumbing and the Canvas.
+- **CandleBuffer (8.2).** Append-only ring buffer of closed candles with
+  O(1) append and indexed access.
+- **Viewport (8.3).** `ChartViewport` — first visible index, visible bar count,
+  auto-scale flag — with pan and zoom expressed as pure functions.
+- **Visible candle culling (8.4).** The renderer draws only the window the
+  viewport exposes, not the whole buffer.
+- **Candlesticks (8.5).** Body and wick rendering with bull/bear colouring from
+  chart tokens, separate from Material roles.
+- **Grid (8.6).** Price and time gridlines.
+- **Price axis (8.7).** Ticks and labels from `PriceAxisTicks`; the axis is drawn
+  in a right-hand gutter, outside the plot rectangle.
+- **Time axis (8.8).** `TimeAxisTicks` picks label instants at a spacing that
+  keeps them legible at the current zoom.
+- **Sessions (8.9).** Session shading driven by the Phase 3 trading calendar.
+- **Forming candle (8.10).** The in-progress bar is folded into the frame
+  separately from the closed buffer, so the axis spans it without the buffer
+  being asked to clamp a not-yet-closed index.
+- **Timeframes (8.11).** `TimeframeAggregator` builds M1/M5/M15/H1/H4/D1 from
+  the M1 base, with the Trading screen opening on H1.
+- **Rendering optimisation (8.12).** Draw-time auto-scale re-fit over the
+  visible window, explicit `clipRect`, and per-frame axis fitting. The
+  auto-scale read is over ~100 bars, not a re-aggregation.
+- **Performance testing (8.13).** See *Unverified requirements* — no frame-rate
+  figure was ever recorded, which is exactly the gap the Phase 8 diagnostics
+  work is closing.
+
+### Files created
+
+- `core/chart/buffer/CandleBuffer.kt`
+- `core/chart/viewport/ChartViewport.kt`
+- `core/chart/coordinates/ChartCoordinateTransformer.kt`, `PriceAxisRange.kt`,
+  `PriceAxisTicks.kt`, `TimeAxisTicks.kt`
+- `core/chart/renderer/ChartRenderer.kt`, `ChartFrameAssembler.kt`,
+  `ChartRenderState.kt`, `ChartAutoScale.kt`, `ChartRevealPlanner.kt`,
+  `ChartStyle.kt`, `FormingCandleBuilder.kt`
+- `core/chart/timeframe/Timeframe.kt`, `TimeframeAggregator.kt`
+- `core/chart/gestures/ChartGestureController.kt`
+- `ui/chart/CandlestickChart.kt`, `ui/chart/ChartDiagnosticsHook.kt`
+- `feature/trading/TradingViewModel.kt`, `TradingSessionSource.kt`
+- Tests: `ChartFixtures.kt`, `CandleBufferTest.kt`, `ChartViewportTest.kt`,
+  `ChartCoordinateTransformerTest.kt`, `AxisTicksTest.kt`,
+  `ChartRendererTest.kt`, `ChartFrameAssemblerTest.kt`, `ChartAutoScaleTest.kt`,
+  `ChartAxisPlacementTest.kt`, `ChartRevealPlannerTest.kt`,
+  `FormingCandleBuilderTest.kt`, `TimeframeTest.kt`,
+  `TimeframeAggregatorTest.kt`, `TradingViewModelTest.kt`
+
+### Decisions worth recording
+
+- **The clock is a flow, not a poll.** `TradingSessionSource.simInstants()`
+  emits the simulated instant and the ViewModel collects it. A
+  `while (isActive) { delay(...) }` inside the ViewModel would hang every unit
+  test, because a test scheduler never reaches idle while a `delay` is
+  outstanding. Keeping the cadence behind the port leaves the ViewModel a pure
+  consumer a test can feed one instant at a time.
+- **The forming candle's range is folded separately.** `CandleBuffer.highestHigh`
+  /`lowestLow` do not clamp their arguments, so passing the forming candle's
+  index throws. `ChartFrameAssembler` therefore computes the range over the
+  closed window and folds the forming high and low in separately.
+- **Auto-scale is re-fitted at draw time, not on publish.** The price axis spans
+  the *visible* extremes, which only the draw lambda knows; the range on
+  `ChartRenderState` is fitted to whichever frame was last published and is
+  stale after a zoom or pan. A stale range is not cosmetic: `yOfPrice` maps a
+  price above the maximum to a negative `y`, drawing candles outside the plot.
+- **A Canvas does not clip; the chart clips itself.** Compose `Canvas` does not
+  clip its draw commands to its bounds, and the axis gutters sit deliberately
+  outside the plot rectangle, so without an explicit `clipRect` the chart paints
+  over the timeframe chips above it and the navigation bar below.
+- **A light republish must read the latest viewport.** `refreshFormingCandle`
+  takes the viewport from `lastViewport` and only falls back to the published
+  frame's, because reading the frame's viewport snaps a pan back to the live
+  edge on the next tick.
+- **Test dispatchers must own every thread the screen touches.** The ViewModel's
+  dispatchers must be injected, and the in-memory Room database must be built
+  with a direct query and transaction executor, because Room runs queries on its
+  own executor that the test scheduler cannot see.
+- **A fake clock's flow must be closeable.** A `Channel` + `receiveAsFlow()`,
+  not a `MutableSharedFlow`: the real source's flow *completes* at the end of a
+  season, and only a channel can be closed to reproduce that.
+
+### Verification
+
+- At the end of Phase 8 (`c7f5020`): 777 test methods, 214 over Phase 7's 563.
+- Re-run 2026-10-22 on the current tree: `tests=899 failures=0 errors=0`.
+- `:app:assembleDebug` succeeds; `:app:lintDebug` reports 0 errors.
+- The merged manifest still declares no `android.permission.INTERNET`.
+
+### Unverified requirements
+
+- **No frame-rate or throughput figure was ever recorded (Step 8.13).** This is
+  the one acceptance criterion Phase 8 did not meet. The chart renders on a
+  device, but nothing measured how fast; the debug-only diagnostics added
+  afterwards exist to close this and are not a Phase 8 deliverable.
+- **No on-device visual verification of the chart.** There is no device and no
+  emulator in this environment (no `/dev/kvm`), so candle placement, axis
+  legibility, session shading and clipping are confirmed by
+  `ChartAxisPlacementTest`'s pixel read-back and by inspection, not by eye.
+- **No real dataset rendered through the chart end to end.** Tests build
+  synthetic candles; the debug seeder is the only path that has put real
+  Dukascopy data in front of the renderer.
+- **The debug-only seeder and diagnostics are temporary.** Both live in
+  `app/src/debug/`, are compiled into debug builds only, and must be deleted —
+  not extended — once Phase 15 provides the real import UI.
+
+### Phase completion report
+
+```
+PHASE COMPLETION REPORT
+
+Phase: 8 — Custom professional chart rendering
+Status: COMPLETE (one acceptance criterion unmet: 8.13 performance measurement)
+
+Implemented:
+- core/chart split from ui/chart; core testable without a device
+- CandleBuffer, ChartViewport, visible-window culling
+- Candlesticks, grid, price axis, time axis, session shading, forming candle
+- Timeframes M1..D1 aggregated from M1; Trading screen opens on H1
+- Draw-time auto-scale re-fit, explicit clipRect, per-frame axis fitting
+- Trading screen and clock-following TradingViewModel via TradingSessionSource
+
+Files Created:
+- core/chart/{buffer,viewport,coordinates,renderer,timeframe,gestures}/*.kt
+- ui/chart/CandlestickChart.kt, ui/chart/ChartDiagnosticsHook.kt
+- feature/trading/TradingViewModel.kt, feature/trading/TradingSessionSource.kt
+- 14 chart/trading test suites
+
+Files Modified:
+- app/build.gradle.kts (Compose, test dispatchers), AGENTS.md, AndroidManifest
+
+Build Result:
+- :app:assembleDebug succeeds
+
+Tests Executed:
+- 777 at the end of Phase 8 (214 new); 899 on the current tree
+
+Tests Passed:
+- 899
+
+Tests Failed:
+- 0
+
+Known Issues:
+- Step 8.13 performance testing was not performed; no frame-rate figure exists
+
+Unverified Requirements:
+- No device or emulator available; chart pixels confirmed only by test read-back
+- No real dataset rendered through the chart end to end
+- Debug-only seeder and diagnostics are temporary and must be deleted at Phase 15
+
+Next Phase:
+- Phase 9 — Chart gestures, viewport and crosshair
+```
+
+
+---
+
+## Phase 9 — Chart gestures, viewport and crosshair — COMPLETE
+
+Delivered the interaction layer over the Phase 8 renderer. Parts 1–4 landed
+inside the Phase 8 commits; `025e12e` carried parts 5–10.
+
+> **Backfilled 2026-10-22.** Phase 9 shipped in `025e12e` with no progress-doc
+> section and no completion report. Reconstructed from that commit, the current
+> code and its step markers, and the Phase 8 hard rules that govern it.
+
+### Implemented
+
+- **Horizontal panning (9.1).** A one-finger horizontal drag moves the viewport;
+  a pan is the only gesture that drags the time axis.
+- **Fling (9.2).** `ChartFling` — a `VelocityTracker` decides whether a release
+  is a flick, and `runFling` decelerates to a stop. A new touch cancels the
+  previous fling.
+- **Pinch zoom (9.3).** Two-finger zoom strictly around the focal point.
+- **Zoom limits (9.4).** `ChartZoomLimits` bounds candle width to 2dp..40dp,
+  derived from the plot the user is actually looking at.
+- **Crosshair (9.5).** A long press that is held still promotes the gesture to
+  `CROSSHAIR`; `CrosshairReadout` supplies the label. A fling is cancelled
+  underneath it.
+- **Haptic feedback (9.6).** `HapticFeedbackType.TextHandleMove` fires as the
+  crosshair crosses onto a new candle.
+- **Manual price scaling (9.7).** A vertical drag in the price gutter rescales
+  the axis and sets `autoScale` false; the draw-time re-fit honours that flag.
+- **Jump to latest (9.8).** A double tap on the plot restores the auto-fitted
+  live edge; a control is shown only when the newest candle has scrolled off the
+  right.
+- **Timeframe switching (9.9).** `ChartTimeframeAnchor` keeps the window centre
+  on the same moment across a timeframe change, rather than on the same index.
+- **Gesture priority (9.10).** Where the gesture *starts* decides what it is;
+  the gesture is re-resolved each event but only ever promoted.
+
+### Files created
+
+- `core/chart/gestures/ChartFling.kt`, `ChartZoomLimits.kt`,
+  `ChartGesturePriority.kt`
+- `core/chart/crosshair/CrosshairPosition.kt`, `CrosshairReadout.kt`
+- `core/chart/renderer/ChartPriceScale.kt`
+- `core/chart/viewport/ChartTimeframeAnchor.kt`
+- Tests: `CrosshairReadoutTest.kt`, `ChartFlingTest.kt`,
+  `ChartGesturePriorityTest.kt`, `ChartZoomLimitsTest.kt`,
+  `ChartPriceScaleTest.kt`, `ChartTimeframeAnchorTest.kt`
+
+### Files modified
+
+- `ui/chart/CandlestickChart.kt` — the gesture loop, crosshair, haptics, axis
+  drag, jump control and double-tap detection.
+- `core/chart/gestures/ChartGestureController.kt` — promotion.
+- `core/chart/renderer/ChartFrameAssembler.kt`, `ChartRenderState.kt` — carry
+  the crosshair and manual scale.
+- `feature/trading/TradingViewModel.kt` — timeframe selection.
+
+### Decisions worth recording
+
+- **The anchor is a timestamp, not an index.** A timeframe change re-buckets the
+  data, so index 400 of M1 and index 400 of H1 are different moments. Anchoring
+  on the centre *timestamp* keeps the user looking at the same market event.
+  `centreTimestamp` returns null for an empty buffer, a window before the data,
+  and a window panned into empty space — all three are tested.
+- **Gesture identity is decided at touch-down and only ever promoted.** A pan
+  that becomes a long-press crosshair does not flip back, so a small wobble
+  during a hold cannot change what the gesture is.
+- **Zoom limits are in candle widths, not price.** They are derived from the
+  plot the user is looking at, so the same limit means the same visual density
+  on any screen.
+- **Manual scale disables the draw-time re-fit rather than fighting it.**
+  `ChartViewport.autoScale` is the single flag; the re-fit honours it, so a
+  manually scaled axis keeps its range while everything else still re-fits.
+
+### Verification
+
+- At commit `025e12e`: 884 test methods, 107 over Phase 8's 777.
+- Re-run 2026-10-22 on the current tree: `tests=899 failures=0 errors=0`; the
+  Phase 9 suites contribute 139 executed tests and all pass.
+- `:app:assembleDebug` succeeds; `:app:lintDebug` reports 0 errors.
+- The merged manifest still declares no `android.permission.INTERNET`.
+
+### Unverified requirements
+
+- **No gesture has been performed on a device.** There is no device and no
+  emulator in this environment (no `/dev/kvm`). The gesture logic is pure and
+  tested, but touch latency, fling feel and haptic timing are unconfirmed by me.
+- **Haptic feedback is fire-and-forget.** The call is made; whether the device
+  has a haptic motor, and whether the tester feels the tick, is unverified.
+- **No frame-rate figure exists for a gesture-heavy session.** This is the gap
+  the Phase 8 diagnostics work targets, and it is still open.
+- **Double-tap and long-press timing use fixed constants**
+  (`ChartGesturePriority`, `DOUBLE_TAP_MS`). They are not tuned against a real
+  user's cadence.
+
+### Phase completion report
+
+```
+PHASE COMPLETION REPORT
+
+Phase: 9 — Chart gestures, viewport and crosshair
+Status: COMPLETE
+
+Implemented:
+- Horizontal pan, fling with velocity tracking, pinch zoom around the focal point
+- Zoom limits in candle widths (2dp..40dp) derived from the live plot
+- Long-press crosshair with readout; fling cancelled underneath it
+- Boundary haptics as the crosshair crosses a candle
+- Manual price scaling via a gutter drag; autoScale flag honoured by the re-fit
+- Jump to latest by double tap, with a control shown only when scrolled off
+- Timeframe switching anchored on the centre timestamp
+- Gesture priority decided at touch-down, promotion-only
+- 139 executed tests across seven suites
+
+Files Created:
+- core/chart/gestures/ChartFling.kt, ChartZoomLimits.kt, ChartGesturePriority.kt
+- core/chart/crosshair/CrosshairPosition.kt, CrosshairReadout.kt
+- core/chart/renderer/ChartPriceScale.kt
+- core/chart/viewport/ChartTimeframeAnchor.kt
+- core/chart/**/CrosshairReadoutTest.kt, ChartFlingTest.kt,
+  ChartGesturePriorityTest.kt, ChartZoomLimitsTest.kt, ChartPriceScaleTest.kt,
+  ChartTimeframeAnchorTest.kt
+
+Files Modified:
+- ui/chart/CandlestickChart.kt, core/chart/gestures/ChartGestureController.kt,
+  core/chart/renderer/ChartFrameAssembler.kt, ChartRenderState.kt,
+  feature/trading/TradingViewModel.kt
+
+Build Result:
+- :app:assembleDebug succeeds
+
+Tests Executed:
+- 884 at the Phase 9 commit (107 new over Phase 8); 899 on the current tree
+
+Tests Passed:
+- 899
+
+Tests Failed:
+- 0
+
+Known Issues:
+- No on-device gesture or haptic verification (no device or emulator available)
+- Double-tap and long-press timings are fixed constants, not user-tuned
+
+Unverified Requirements:
+- Touch latency and fling feel unmeasured
+- No frame-rate figure for a gesture-heavy session
+- Haptic motor presence and perceived timing unverified
+
+Next Phase:
+- Phase 10 — Interactive chart trading
+```

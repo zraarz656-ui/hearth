@@ -262,7 +262,11 @@ fun CandlestickChart(
                         // crosshair: one finger down, not yet moved. Cleared once it has
                         // moved or gained a partner, so the timer below is armed only
                         // when a long press is still possible.
-                        var longPressPending = true
+                        //
+                        // Armed only for a pan. A touch that began in the price gutter
+                        // is committed and can never become a crosshair, so arming the
+                        // timer for it would do nothing but fire a timeout 280 ms in.
+                        var longPressPending = gesture == ChartGesture.PAN
 
                         val tracker = VelocityTracker()
                         tracker.addPosition(down.uptimeMillis, down.position)
@@ -294,11 +298,34 @@ fun CandlestickChart(
 
                             if (event == null) {
                                 // Timed out with the finger down and unmoved: that is
-                                // the long press. Promote and keep awaiting normally.
+                                // the long press. Keep awaiting normally.
                                 longPressPending = false
-                                gesture = ChartGesturePriority.resolve(
-                                    ChartHitTest(longPressSatisfied = true),
+
+                                // The long press goes through the same promotion rule
+                                // as every other event, because `resolve` would ignore
+                                // what the gesture already is. A touch that began in
+                                // the price gutter is committed, and holding it still is
+                                // still an axis drag: `resolve` would hand back
+                                // CROSSHAIR and throw the drag away, which is a real
+                                // defect a device log caught — every axis hold longer
+                                // than the 280 ms threshold became a crosshair.
+                                // `promote` returns a committed gesture unchanged.
+                                val promoted = ChartGesturePriority.promote(
+                                    current = gesture,
+                                    hit = ChartHitTest(longPressSatisfied = true),
                                 )
+
+                                // A committed gesture has nothing to promote to. Return
+                                // to the normal await so the drag the user started
+                                // continues, rather than opening a crosshair over it.
+                                if (promoted == gesture) continue
+
+                                // Bracket the change so a `begin` still matches its
+                                // `end`. Without this the release would log the *new*
+                                // name, because `endGesture` reads `gesture`.
+                                ChartDiagnosticsHook.onGesture?.invoke(gesture.name, false)
+                                gesture = promoted
+                                ChartDiagnosticsHook.onGesture?.invoke(promoted.name, true)
                                 fling.cancel()
 
                                 // Publish the readout now, from the down position.

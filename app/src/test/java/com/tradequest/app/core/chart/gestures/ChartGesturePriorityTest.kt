@@ -208,6 +208,45 @@ class ChartGesturePriorityTest {
     }
 
     @Test
+    fun `the long press must be promoted, not resolved`() {
+        // Regression for a device-visible defect. The long-press timer used to call
+        // `resolve(longPressSatisfied = true)` on timeout, and `resolve` ignores what
+        // the gesture already is. Holding still in the price gutter therefore came
+        // back as CROSSHAIR, throwing away an axis drag the user had deliberately
+        // started — every axis hold longer than the 280 ms threshold was hijacked.
+        // The device log showed it exactly: `begin PRICE_AXIS_SCALE` paired with
+        // `end CROSSHAIR` for every hold over 280 ms, and a correct pairing for the
+        // two holds under it.
+        //
+        // This asserts the two calls disagree, which is *why* the caller must use
+        // `promote`. If a future change makes `resolve` respect commitment, this test
+        // fails and should be deleted deliberately rather than silently.
+        assertEquals(
+            ChartGesture.CROSSHAIR,
+            ChartGesturePriority.resolve(ChartHitTest(longPressSatisfied = true)),
+        )
+        assertEquals(
+            ChartGesture.PRICE_AXIS_SCALE,
+            ChartGesturePriority.promote(
+                current = ChartGesture.PRICE_AXIS_SCALE,
+                hit = ChartHitTest(longPressSatisfied = true),
+            ),
+        )
+    }
+
+    @Test
+    fun `a held pan still becomes a crosshair`() {
+        // The fix must not disable the long press for the gesture that wants it.
+        assertEquals(
+            ChartGesture.CROSSHAIR,
+            ChartGesturePriority.promote(
+                current = ChartGesture.PAN,
+                hit = ChartHitTest(longPressSatisfied = true),
+            ),
+        )
+    }
+
+    @Test
     fun `promotion of a bare pan agrees with resolve`() {
         // Where nothing has happened yet, promote must be the same decision as
         // resolve, or the two would disagree on the first event of a touch.

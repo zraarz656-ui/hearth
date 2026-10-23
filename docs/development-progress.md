@@ -1632,10 +1632,11 @@ Build Result:
 - :app:compileDebugKotlin succeeds
 
 Tests Executed:
-- 1011
+- 1011 at the Phase 10 commit; 1019 on the current tree (8 added by
+  `TradingSessionWiringTest`)
 
 Tests Passed:
-- 1011
+- 1019
 
 Tests Failed:
 - 0
@@ -1653,6 +1654,27 @@ Unverified Requirements:
 Next Phase:
 - None. Phase 10 is the gate; Phase 11 is not started.
 ```
+
+### Added after the fact: the Phase 10 wiring gap
+
+Reviewing Phase 11 exposed a gap of the same shape as its launcher bug. Every
+Phase 10 test constructed `LiveTradingSession` itself from a fake market
+repository and a hand-built `TradingContext`. The app never does that: it goes
+through `TradingSessionSource.createLiveSession`, which reads the season,
+resolves the dataset bounds and news, and assembles the context at the
+composition root. **Nothing exercised that path**, so a wiring defect — a Trading
+screen that opened to an empty chart, or a Buy that did nothing — would have
+passed every test.
+
+`TradingSessionWiringTest` (8 tests, Robolectric) now drives the real
+`AppContainer`: it starts a challenge through the launcher, builds the session
+the screen is handed, and buys, closes and syncs through it. It also covers the
+two refusal paths (`createLiveSession` is null with no season, and null for a
+season on an empty dataset).
+
+This test **passes**, so Phase 10's wiring is sound — unlike Phase 11's, which
+was genuinely broken. The value is that the gap is now closed rather than
+untested.
 
 
 ## Phase 11 — Challenge Mode — COMPLETE
@@ -1834,10 +1856,11 @@ Build Result:
 - :app:compileDebugKotlin succeeds; :app:assembleDebug and :app:lintDebug succeed
 
 Tests Executed:
-- 1083
+- 1083 at the Phase 11 commit; 1092 on the current tree (9 added by
+  `DebugSelfCheckTest` and `TradingSessionWiringTest`)
 
 Tests Passed:
-- 1083
+- 1092
 
 Tests Failed:
 - 0
@@ -1854,3 +1877,32 @@ Unverified Requirements:
 Next Phase:
 - Phase 12. Phases 12-14 remain; the hard gate is after Phase 14.
 ```
+
+### Added after the fact: the on-device harness (`DebugSelfCheck`)
+
+Three claims in Phases 10 and 11 are about the whole app on a real device, and no
+Robolectric test settles them: that the wiring is *connected* (the Phase 11 bug
+was a missing call site), that a CHALLENGE at 1x actually advances with real
+elapsed time, and that Room behaves on a device's SQLite rather than an in-memory
+one.
+
+`DebugSelfCheck` (`app/src/debug/`) runs those flows through the **real object
+graph** and appends a `PASS`/`FAIL` report to the diagnostics log, reachable from
+the Debug screen's **Run self-check** button. 17 steps cover the Phase 11
+lifecycle, the Phase 10 trading path, the challenge evaluation and persistence,
+a real 1.5 s wall-clock wait, and a container restart. Each scenario starts its
+own season, so no scenario's accumulated state can mask a later failure.
+
+It runs on **scratch databases** deleted before and after, so it cannot touch the
+season being played. That is why `AppContainer` gained two optional database-name
+parameters: the check drives the real container rather than a replica, and a
+replica would not have caught the original bug.
+
+`DebugSelfCheckTest` (`app/src/testDebug/`) runs the same code under Robolectric
+and asserts all 17 steps pass, so a broken harness fails the suite instead of
+silently reporting nothing on a phone. The one claim only a device can settle is
+the real-time advance.
+
+Verified on the current tree: 17 passed, 0 failed, with sane figures — a 0.10-lot
+buy held six minutes realises $56.30, the score is 41 (TRADER), the profit target
+is $11,500 and the loss floor $9,000, matching `ChallengeRules.STANDARD`.

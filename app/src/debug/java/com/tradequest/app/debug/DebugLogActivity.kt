@@ -26,6 +26,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
@@ -34,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tradequest.app.ui.theme.TradeQuestTheme
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Debug-only screen that shows the diagnostics log and lets it be copied off the
@@ -68,12 +70,30 @@ class DebugLogActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background,
                 ) {
+                    // The self-check runs on its own scope so a rotation or a
+                    // backgrounding does not cancel it half way and leave a
+                    // partial report in the log.
+                    val scope = rememberCoroutineScope()
+                    var running by remember { mutableStateOf(false) }
                     DebugLogScreen(
                         loadLog = { DebugDiagnostics.readLog() },
                         logPath = { DebugDiagnostics.logPath() },
                         onCopy = { text -> copyToClipboard(text) },
                         onShare = { text -> share(text) },
                         onClear = { DebugDiagnostics.clear() },
+                        selfCheckRunning = running,
+                        onSelfCheck = {
+                            if (!running) {
+                                running = true
+                                scope.launch {
+                                    try {
+                                        DebugSelfCheck.run(applicationContext)
+                                    } finally {
+                                        running = false
+                                    }
+                                }
+                            }
+                        },
                     )
                 }
             }
@@ -107,6 +127,8 @@ private fun DebugLogScreen(
     onCopy: (String) -> Unit,
     onShare: (String) -> Unit,
     onClear: () -> Unit,
+    selfCheckRunning: Boolean,
+    onSelfCheck: () -> Unit,
 ) {
     // Refreshed on a timer rather than read once: the frame monitor appends every
     // few seconds while the tester is on the chart, and a frozen snapshot would
@@ -152,6 +174,16 @@ private fun DebugLogScreen(
         ) {
             OutlinedButton(onClick = { autoRefresh = !autoRefresh }) {
                 Text(if (autoRefresh) "Pause auto-refresh" else "Resume auto-refresh")
+            }
+            // Runs the Phase 10/11 flows through the real object graph on scratch
+            // databases and appends the report to the log below. This is the only
+            // way to exercise the wiring, the real clock and a device's SQLite
+            // without a debugger.
+            Button(
+                onClick = onSelfCheck,
+                enabled = !selfCheckRunning,
+            ) {
+                Text(if (selfCheckRunning) "Running self-check…" else "Run self-check")
             }
         }
 

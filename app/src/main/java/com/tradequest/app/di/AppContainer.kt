@@ -62,14 +62,26 @@ import kotlinx.coroutines.flow.map
  */
 class AppContainer(
     val applicationContext: Context,
+    /**
+     * Overrides the database file names, for a container that must not touch the
+     * player's real data.
+     *
+     * Defaults are the app's own names, so production is unaffected. The debug
+     * self-check passes scratch names and runs the *real* object graph — the same
+     * launcher, session source and challenge service the app uses — against
+     * throwaway files, which is the only way to exercise the real wiring on a
+     * device without risking the season being played.
+     */
+    marketDatabaseName: String = MarketDatabase.NAME,
+    playerDatabaseName: String = PlayerDatabase.NAME,
 ) {
 
     val marketDatabase: MarketDatabase by lazy {
-        MarketDatabase.create(applicationContext)
+        MarketDatabase.create(applicationContext, marketDatabaseName)
     }
 
     val playerDatabase: PlayerDatabase by lazy {
-        PlayerDatabase.create(applicationContext)
+        PlayerDatabase.create(applicationContext, playerDatabaseName)
     }
 
     val marketRepository: MarketRepository by lazy {

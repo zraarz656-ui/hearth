@@ -2125,6 +2125,43 @@ not flood the file.
 observability need appears, it should be designed as a real API then, not
 inherited from this debugging seam.
 
+### `DebugSelfCheck` — the Phase 10/11 on-device harness
+
+`DebugSelfCheck` runs the trading and challenge flows through the **real object
+graph** on the device and appends a `PASS`/`FAIL` report to the diagnostics log.
+The Debug screen has a **Run self-check** button; the tester taps it and copies
+the block.
+
+It exists because three claims in Phases 10 and 11 are about the whole app on a
+real device and no Robolectric test can settle them:
+
+1. **The wiring is connected.** Starting a challenge must create the season *and*
+   bind the clock; the Trading screen must get a tradable session from the same
+   container. A missing call site is invisible to a test of either half — that is
+   exactly the bug Phase 11 shipped and then fixed.
+2. **Real time advances a challenge.** Every unit test injects a clock, so none
+   can say whether a CHALLENGE at 1x actually moves when the wall clock does. The
+   harness waits 1.5 s of real time and requires the clock to have advanced.
+3. **Room behaves on a real file.** Schema validation, the migration and the
+   `WITHOUT ROWID` callback all run for real on a device's SQLite.
+
+Each scenario starts its own season on its own dataset, because a season's replay
+state accumulates and shared state would cascade one failure into the next.
+
+It runs on **scratch databases** (`selfcheck-market.db`, `selfcheck-player.db`),
+deleted before and after the run, so it can never read, write or abandon the
+season the tester is playing. That is why `AppContainer` takes optional database
+names: the check drives the *real* container, not a replica of it, and a replica
+would not have caught the original bug.
+
+`DebugSelfCheckTest` in `app/src/testDebug/` runs the same code under Robolectric
+and asserts every step passes, so a broken harness fails the suite rather than
+silently reporting nothing on a phone. The real-time step is the one claim only a
+device can settle; Robolectric's clock is not a wall clock.
+
+Like the rest of `app/src/debug/`, this is instrumentation and not a deliverable.
+Delete it — do not extend it — once Phase 15 lands.
+
 ### Reading the log
 
 `[frames]` lines are per 300-frame window. `jank` counts frames slower than 1.5x

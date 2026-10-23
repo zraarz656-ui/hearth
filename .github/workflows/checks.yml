@@ -54,13 +54,29 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - uses: android-actions/setup-android@v3
-
       - name: Install the SDK platform the build pins
-        # compileSdk is 36. setup-android does not install a platform by
-        # default, and AGP's auto-download is disabled on CI runners, so this
-        # is explicit rather than left to fail on a missing platform.
-        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+        # The runner image already ships the Android SDK. android-actions/
+        # setup-android@v3 is deliberately not used: it tries to install the
+        # legacy `tools` package, which no longer exists in cmdline-tools 16,
+        # and the whole job dies before reaching Gradle.
+        #
+        # compileSdk is 36 and AGP's auto-download is off on CI runners, so the
+        # platform is installed explicitly rather than left to fail later.
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          # Pick the newest cmdline-tools. Lexical sort would rank 9.0 above
+          # 16.0, so sort on the version numbers with `sort -V`.
+          SDKMANAGER=$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager 2>/dev/null \
+            | sort -V | tail -1)
+          if [ -z "$SDKMANAGER" ]; then
+            echo "no sdkmanager under $SDK_ROOT/cmdline-tools" >&2
+            exit 1
+          fi
+          echo "using $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0"
 
       - uses: gradle/actions/setup-gradle@v4
 

@@ -6,7 +6,7 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path("/workspace/project")
+ROOT = Path(__file__).resolve().parents[1]
 DOCS = [
     ROOT / "TRADEQUEST_DEVELOPMENT_PLAN.md",
     ROOT / "AGENTS.md",
@@ -14,9 +14,6 @@ DOCS = [
     ROOT / "docs" / "architecture.md",
     ROOT / "README.md",
 ]
-
-failures = []
-notes = []
 
 # 1. No live instruction should say prices are cents.
 LIVE_PATTERNS = [
@@ -31,52 +28,7 @@ LIVE_PATTERNS = [
     r"\|\s*price\s*\|[^|]*\bcents\b",
     r"^\s*price\s*[:|].*\bcents\b",
 ]
-for doc in DOCS:
-    text = doc.read_text()
-    for i, line in enumerate(text.splitlines(), 1):
-        low = line.lower()
-        for pat in LIVE_PATTERNS:
-            if re.search(pat, low):
-                # Allow explicit negations / historical explanations.
-                if any(k in low for k in (
-                    "not cents", "not integer cents", "previously",
-                    "renamed", "do not", "never", "instead of",
-                )):
-                    continue
-                failures.append(f"{doc.name}:{i}: live 'cents' instruction: {line.strip()[:90]}")
 
-# 2. The canonical constants must appear in plan and AGENTS.md.
-for doc in [ROOT / "TRADEQUEST_DEVELOPMENT_PLAN.md", ROOT / "AGENTS.md"]:
-    text = doc.read_text()
-    if "PRICE_UNITS_PER_USD = 1000" not in text:
-        failures.append(f"{doc.name}: missing PRICE_UNITS_PER_USD = 1000")
-
-if "PRICE_UNITS_PER_PIP" not in (ROOT / "TRADEQUEST_DEVELOPMENT_PLAN.md").read_text():
-    failures.append("plan: missing PRICE_UNITS_PER_PIP definition")
-
-# 3. The no-change rule must be in the agent workflow section.
-plan = (ROOT / "TRADEQUEST_DEVELOPMENT_PLAN.md").read_text()
-if "Never change the price storage scale" not in plan:
-    failures.append("plan: missing 'Never change the price storage scale' guard")
-if "Never perform money arithmetic in `Int`" not in plan:
-    failures.append("plan: missing Int money guard")
-if "Never express a stop, target, or trailing-stop distance in raw price units" not in plan:
-    failures.append("plan: missing pip-distance guard")
-
-# 4. Step 1.1 fields must be *Units, not *Cents.
-s11 = plan.split("## Step 1.1")[1].split("## Step 1.2")[0]
-for field in ("openUnits", "highUnits", "lowUnits", "closeUnits"):
-    if field not in s11:
-        failures.append(f"Step 1.1 missing {field}")
-for bad in ("openCents:", "highCents:", "lowCents:", "closeCents:"):
-    if bad in s11:
-        failures.append(f"Step 1.1 still declares {bad}")
-
-# 5. Kotlin sources must not reintroduce a cents scale or a Double money type.
-#
-# The doc checks above cannot see code, so a developer could add
-# `val priceCents: Int` or a `Double` price field and every doc check would
-# still pass. These rules catch that at the source level.
 SOURCE_ROOTS = [
     ROOT / "app" / "src" / "main" / "java",
     ROOT / "app" / "src" / "test" / "java",
@@ -85,9 +37,19 @@ SOURCE_RULES = [
     # A field, parameter or local named like a cents quantity.
     (r"\b(price|open|high|low|close|stop|target|entry|exit|fill|bid|ask|sl|tp)Cents\b",
      "cents-named price field"),
-    # Dividing a price by 100 to get dollars is the cents-scale conversion.
-    (r"/\s*100\b(?!\s*\d)",
-     "possible cents conversion (division by 100)"),
+    # Dividing a *price* by 100 is the cents-scale conversion.
+    #
+    # This deliberately requires a price-like name on the left of the divide.
+    # A bare `/ 100` cannot tell the bug from two correct idioms: converting
+    # micro-dollars to cents for display (`frac / (MICROS_PER_USD / 100)`, which
+    # is micros-per-cent, not a price scale) and converting lot-hundredths to
+    # lots (`lotUnits / 100`). Both are all over the formatting code, so a bare
+    # pattern reports three false positives on a clean checkout and the check
+    # can never go green. Rule 1 above already names the price-like prefixes;
+    # this reuses that vocabulary so the two rules agree.
+    (r"(?:\b(?:price|open|high|low|close|stop|target|entry|exit|fill|bid|ask)\w*"
+     r"|\bsl\b|\btp\b)\s*/\s*100\b",
+     "possible cents conversion (price divided by 100)"),
     # Authoritative money must not be Float or Double.
     (r"\b(balance|equity|pnl|profit|loss|margin|commission|swap|drawdown)"
      r"\w*\s*:\s*(Double|Float)\b",
@@ -97,37 +59,103 @@ SOURCE_RULES = [
 ALLOWED = {ROOT / "app" / "src" / "main" / "java" / "com" / "tradequest" / "app"
            / "core" / "market" / "PriceScale.kt"}
 
-source_files = []
-for root in SOURCE_ROOTS:
-    if root.exists():
-        source_files.extend(sorted(root.rglob("*.kt")))
 
-for src in source_files:
-    if src in ALLOWED:
-        continue
-    for i, line in enumerate(src.read_text().splitlines(), 1):
-        stripped = line.strip()
-        if stripped.startswith("//") or stripped.startswith("*"):
-            continue
-        low = line.lower()
-        if any(k in low for k in ("never", "not cents", "avoid", "forbidden")):
-            continue
-        for pat, label in SOURCE_RULES:
-            if re.search(pat, line):
-                failures.append(f"{src.relative_to(ROOT)}:{i}: {label}: {stripped[:80]}")
+def check_docs(failures: list[str]) -> None:
+    """Checks 1-4: the documents must not describe prices as cents."""
+    for doc in DOCS:
+        text = doc.read_text()
+        for i, line in enumerate(text.splitlines(), 1):
+            low = line.lower()
+            for pat in LIVE_PATTERNS:
+                if re.search(pat, low):
+                    # Allow explicit negations / historical explanations.
+                    if any(k in low for k in (
+                        "not cents", "not integer cents", "previously",
+                        "renamed", "do not", "never", "instead of",
+                    )):
+                        continue
+                    failures.append(
+                        f"{doc.name}:{i}: live 'cents' instruction: {line.strip()[:90]}")
 
-print("=" * 66)
-print("PRICE SCALE CONSISTENCY CHECK")
-print("=" * 66)
-print(f"documents checked: {len(DOCS)}")
-print(f"kotlin sources scanned: {len(source_files)}")
-print()
-if failures:
-    print(f"FAILED ({len(failures)}):")
-    for f in failures:
-        print(f"  - {f}")
-    sys.exit(1)
-else:
+    # 2. The canonical constants must appear in plan and AGENTS.md.
+    for doc in [ROOT / "TRADEQUEST_DEVELOPMENT_PLAN.md", ROOT / "AGENTS.md"]:
+        if "PRICE_UNITS_PER_USD = 1000" not in doc.read_text():
+            failures.append(f"{doc.name}: missing PRICE_UNITS_PER_USD = 1000")
+
+    plan = (ROOT / "TRADEQUEST_DEVELOPMENT_PLAN.md").read_text()
+    if "PRICE_UNITS_PER_PIP" not in plan:
+        failures.append("plan: missing PRICE_UNITS_PER_PIP definition")
+
+    # 3. The no-change rule must be in the agent workflow section.
+    if "Never change the price storage scale" not in plan:
+        failures.append("plan: missing 'Never change the price storage scale' guard")
+    if "Never perform money arithmetic in `Int`" not in plan:
+        failures.append("plan: missing Int money guard")
+    if ("Never express a stop, target, or trailing-stop distance in raw price units"
+            not in plan):
+        failures.append("plan: missing pip-distance guard")
+
+    # 4. Step 1.1 fields must be *Units, not *Cents.
+    s11 = plan.split("## Step 1.1")[1].split("## Step 1.2")[0]
+    for field in ("openUnits", "highUnits", "lowUnits", "closeUnits"):
+        if field not in s11:
+            failures.append(f"Step 1.1 missing {field}")
+    for bad in ("openCents:", "highCents:", "lowCents:", "closeCents:"):
+        if bad in s11:
+            failures.append(f"Step 1.1 still declares {bad}")
+
+
+def check_sources(failures: list[str]) -> int:
+    """Check 5: Kotlin sources must not reintroduce cents or Double money.
+
+    The doc checks above cannot see code, so a developer could add
+    `val priceCents: Int` or a `Double` price field and every doc check would
+    still pass. These rules catch that at the source level. Returns the number
+    of sources scanned.
+    """
+    source_files: list[Path] = []
+    for root in SOURCE_ROOTS:
+        if root.exists():
+            source_files.extend(sorted(root.rglob("*.kt")))
+
+    for src in source_files:
+        if src in ALLOWED:
+            continue
+        for i, line in enumerate(src.read_text().splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("//") or stripped.startswith("*"):
+                continue
+            # Only the code before a trailing `//` can be a regression. Scanning
+            # the comment too would flag prose that *describes* the forbidden
+            # pattern -- including the comment above that explains why the rule
+            # is shaped this way. The old escape skipped any line containing
+            # "never", "avoid" or similar, which meant a real hit could be
+            # silenced by wording, e.g. `val priceCents = priceUnits / 100`.
+            code = line.split("//", 1)[0]
+            for pat, label in SOURCE_RULES:
+                if re.search(pat, code):
+                    failures.append(
+                        f"{src.relative_to(ROOT)}:{i}: {label}: {stripped[:80]}")
+    return len(source_files)
+
+
+def main() -> int:
+    failures: list[str] = []
+    check_docs(failures)
+    scanned = check_sources(failures)
+
+    print("=" * 66)
+    print("PRICE SCALE CONSISTENCY CHECK")
+    print("=" * 66)
+    print(f"documents checked: {len(DOCS)}")
+    print(f"kotlin sources scanned: {scanned}")
+    print()
+    if failures:
+        print(f"FAILED ({len(failures)}):")
+        for f in failures:
+            print(f"  - {f}")
+        return 1
+
     print("PASSED")
     print()
     print("  - no live 'integer cents' instruction remains")
@@ -136,3 +164,8 @@ else:
     print("  - all three 'Never ...' guards present in the agent workflow")
     print("  - Step 1.1 uses *Units fields and declares no *Cents fields")
     print("  - no Kotlin source reintroduces cents or Double money")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

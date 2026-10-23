@@ -2153,17 +2153,28 @@ ships the SDK, so the action is gone and the job installs only the pinned
 platform itself. `sort -V` picks the cmdline-tools directory, because a lexical
 sort would rank `9.0` above `16.0`. Green on `4fe72d2`, all three jobs.
 
-**`tools/check_price_scale.py` is deliberately not in the workflow.** It fails
-on a clean checkout (three `division by 100` hits in `MoneyMath.kt` and
-`ReplayNotifications.kt`) — verified by stashing and re-running at `HEAD`. Wiring
-a known-red check into CI would make the pipeline red from its first run and
-teach everyone to ignore it. Fix the check or the three call sites first, then
-add the job.
+**`tools/check_price_scale.py` is now in the workflow.** It used to be excluded
+because it failed on a clean checkout. The cause was the check, not the code:
+its `/ 100` rule could not tell the cents regression from two correct idioms that
+appear throughout the formatting helpers — converting micro-dollars to cents for
+display (`frac / (MICROS_PER_USD / 100)`, which is micros-per-cent, not a price
+scale) and converting lot-hundredths to lots (`lotUnits / 100`). Both are
+correct, so the rule was reporting three false positives and could never go
+green. A check that always fails is not a check.
+
+The rule now requires a price-like name on the left of the divide, reusing the
+vocabulary rule 1 already uses, so the two agree. Two other things were fixed
+while in there: `ROOT` was hardcoded to `/workspace/project`, which would break
+on any other machine or in CI (it now resolves from `__file__`, like the phase
+check), and the escape that skipped any line containing "never" or "avoid" is
+gone — it meant a real hit could be silenced by wording, e.g.
+`val priceCents = priceUnits / 100 // not cents`. Only the code before a
+trailing `//` is scanned now.
+
+Verified both directions before wiring it in: green on a clean checkout, and
+still exits 1 on a deliberately introduced `price / 100`. `tools/tests/`
+covers both, plus the closed escape.
 
 ### Still open
 
-`tools/check_price_scale.py` fails on a clean checkout, as noted above. Those
-divisions are a fraction-of-a-dollar formatting path, not a price scale, but the
-check's heuristic cannot tell them apart. Either the check needs to distinguish
-them or the three sites need a suppression; that is a separate decision, and it
-is the one thing blocking that job from joining the workflow.
+Nothing. The last known-red check now passes and runs in CI.

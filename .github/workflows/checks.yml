@@ -29,7 +29,10 @@ jobs:
       - name: Check phase documentation
         run: python3 tools/check_phase_reports.py
 
-      - name: Test the check itself
+      - name: Check the price scale
+        run: python3 tools/check_price_scale.py
+
+      - name: Test the checks themselves
         run: python3 -m unittest discover -s tools/tests -t . -v
 
   dataset-tools:

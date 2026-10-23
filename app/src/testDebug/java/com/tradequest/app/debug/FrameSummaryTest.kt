@@ -93,4 +93,49 @@ class FrameSummaryTest {
         assertEquals(16.67, summary.avgMs, 0.01)
         assertEquals(0, summary.jank)
     }
+
+    // ---------- the formatted line ----------
+
+    /**
+     * The `frames` line must format at all.
+     *
+     * This is the regression test for a crash that shipped to a device. The line
+     * was built as `"first " + "second".format(args)`, and because `+` binds
+     * looser than `.format` the receiver was only the second literal. The format
+     * string began at `fps~`, so the `Int` count met `%.0f` and threw
+     * `IllegalFormatConversionException` — from inside the `Choreographer`
+     * callback, on the main thread, which kills the process. Every 300-frame
+     * window crashed the app about 2.5 s after launch on a 120 Hz panel.
+     *
+     * Asserting only the arithmetic, as the tests above do, cannot see that: the
+     * numbers were right, and the line that printed them was not. So this asserts
+     * on the produced string.
+     */
+    @Test
+    fun `the frames line formats without throwing`() {
+        val summary = summarize(*DoubleArray(300) { 16.67 })
+
+        val line = formatFrameSummary(summary, allocatedPerSecond = 1_048_576.0, gcDelta = 3L)
+
+        // Every field must be filled in, not just the first two. A truncated
+        // format string is precisely the shape of the original bug.
+        assertTrue("missing count: $line", line.contains("n=300"))
+        assertTrue("missing avg: $line", line.contains("avg=16.67ms"))
+        assertTrue("missing jank: $line", line.contains("jank=0"))
+        assertTrue("missing fps: $line", line.contains("fps~60"))
+        assertTrue("missing alloc: $line", line.contains("alloc=1024KB/s"))
+        assertTrue("missing gc: $line", line.contains("gc=3"))
+    }
+
+    @Test
+    fun `the frames line renders an unknown allocation rate without throwing`() {
+        // `allocatedPerSecond` is -1.0 when the runtime stat is unavailable, which
+        // is the branch a device with a missing `art.gc.bytes-allocated` takes.
+        val summary = summarize(*DoubleArray(300) { 16.67 })
+
+        val line = formatFrameSummary(summary, allocatedPerSecond = -1.0, gcDelta = -1L)
+
+        assertTrue("missing unknown alloc: $line", line.contains("alloc=-0KB/s"))
+        assertTrue("missing unknown gc: $line", line.contains("gc=-1"))
+    }
 }

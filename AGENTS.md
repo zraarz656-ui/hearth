@@ -1985,6 +1985,40 @@ with JDK 17 compiles the app fine but fails every Robolectric test with
 `Android SDK 36 requires Java 21 (have Java 17)`. That failure is environmental,
 not a code defect: check `JAVA_HOME` before suspecting a change.
 
+#### The `frames` line must never throw
+
+A real crash came from this file, not from product code. The `frames` summary was
+built as:
+
+```kotlin
+"first half " +
+    "second half".format(args)
+```
+
+`+` binds looser than `.format`, so the receiver was only the *second* literal.
+The format string began at `fps~`, the `Int` count landed on `%.0f`, and
+`String.format` threw `IllegalFormatConversionException`. That ran inside the
+`Choreographer` callback on the main thread, so it was an uncaught exception and
+the process died — at the 300-frame flush, roughly 2.5 s after launch on a 120 Hz
+panel, on every run. `stop()` reached the same path from `onActivityPaused`, so
+pausing also crashed. The summary line was the one thing that could never be
+written, which is why a capture showed sessions ending with no `[frames] n=…`.
+
+Two changes keep it fixed:
+
+- `formatFrameSummary` is a top-level function, so the formatting is reachable
+  from a unit test with no device. `FrameSummaryTest` now asserts on the produced
+  string; asserting only the arithmetic, as it did before, cannot see a broken
+  format string. The parentheses around the concatenation are load-bearing.
+- `flush()` is wrapped so instrumentation can never take the app down. This runs
+  on the main thread in a frame callback, where any exception is fatal. The
+  monitor already treated a missing runtime statistic as "a gap in the log, not a
+  crash"; the summary is held to the same rule, and `finally` resets the window so
+  a failure cannot wedge the counter.
+
+Any future multi-line `.format` must keep the whole concatenation as the
+receiver. Grep for `+$` followed by `.format(` before adding one.
+
 Content: device header, seed result, and **real frame timing**. The frame
 monitor uses `Choreographer.postFrameCallback` and reports avg/p50/p95/p99/max
 intervals plus jank counts over a 300-frame window. This is the only way to get

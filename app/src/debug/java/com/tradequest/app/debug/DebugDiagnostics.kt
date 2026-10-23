@@ -798,40 +798,88 @@ private class DebugFrameMonitor {
     private fun flush() {
         if (count == 0) return
 
-        val sorted = samples.copyOf(count)
-        sorted.sort()
-        val summary = summarizeFrameWindow(sorted, count)
+        // Everything below is instrumentation, and instrumentation must never take
+        // the app down. This runs inside the `Choreographer` callback on the main
+        // thread, so an exception here is an uncaught exception and the process
+        // dies — which is exactly how a formatting bug in this method killed the
+        // app on a device, every 300 frames. The monitor already treats a missing
+        // runtime statistic as "a gap in the log, not a crash"; the summary is held
+        // to the same rule. `finally` resets the window even on failure, so a
+        // broken window cannot wedge the counter and re-throw on every frame.
+        try {
+            val sorted = samples.copyOf(count)
+            sorted.sort()
+            val summary = summarizeFrameWindow(sorted, count)
 
-        val now = System.nanoTime()
-        val windowSeconds = if (windowStartNanos == 0L) 0.0 else (now - windowStartNanos) / 1e9
-        val allocated = readAllocatedBytes()
-        val gcCount = readBlockingGcMs()
-        val allocatedPerSecond = if (windowSeconds > 0 && lastAllocatedBytes > 0 && allocated >= lastAllocatedBytes) {
-            (allocated - lastAllocatedBytes) / windowSeconds
-        } else {
-            -1.0
+            val now = System.nanoTime()
+            val windowSeconds = if (windowStartNanos == 0L) 0.0 else (now - windowStartNanos) / 1e9
+            val allocated = readAllocatedBytes()
+            val gcCount = readBlockingGcMs()
+            val allocatedPerSecond =
+                if (windowSeconds > 0 && lastAllocatedBytes > 0 && allocated >= lastAllocatedBytes) {
+                    (allocated - lastAllocatedBytes) / windowSeconds
+                } else {
+                    -1.0
+                }
+            val gcDelta = if (gcCount >= lastBlockingGcMs) gcCount - lastBlockingGcMs else -1L
+
+            lastAllocatedBytes = allocated
+            lastBlockingGcMs = gcCount
+            windowStartNanos = now
+
+            DebugDiagnostics.log(
+                "frames",
+                formatFrameSummary(summary, allocatedPerSecond, gcDelta),
+            )
+        } catch (error: Exception) {
+            DebugDiagnostics.log("frames", "window summary failed: ${error::class.java.simpleName}")
+        } finally {
+            count = 0
         }
-        val gcDelta = if (gcCount >= lastBlockingGcMs) gcCount - lastBlockingGcMs else -1L
-
-        lastAllocatedBytes = allocated
-        lastBlockingGcMs = gcCount
-        windowStartNanos = now
-
-        DebugDiagnostics.log(
-            "frames",
-            "n=%d avg=%.2fms p50=%.2f p95=%.2f p99=%.2f max=%.2f jank=%d(>%.1fms) " +
-                "fps~%.0f drop2=%d drop4=%d drop8=%d alloc=%.0fKB/s gc=%d"
-                .format(
-                    summary.count, summary.avgMs, summary.p50Ms, summary.p95Ms,
-                    summary.p99Ms, summary.maxMs, summary.jank, summary.jankThresholdMs,
-                    summary.fps, summary.over2x, summary.over4x, summary.over8x,
-                    allocatedPerSecond / 1024.0, gcDelta,
-                ),
-        )
-
-        count = 0
     }
 }
+
+/**
+ * Formats one window's `frames` line.
+ *
+ * # Why this is a separate function
+ *
+ * The frame-window arithmetic is pure and was tested; the *formatting* was not,
+ * and that is where a real crash lived. The line was built as
+ *
+ *     "first half " +
+ *         "second half".format(...)
+ *
+ * and `+` binds looser than `.format`, so the receiver was only the second
+ * literal. The format string therefore began at `fps~`, and the first argument
+ * — an `Int` count — was applied to `%.0f`. That throws
+ * `IllegalFormatConversionException` from inside the `Choreographer` frame
+ * callback, which is an uncaught exception on the main thread: it kills the
+ * process. On a 120 Hz panel the flush fires at 300 frames, about 2.5 seconds
+ * after launch, so the app appeared to crash a few seconds into every run and
+ * the summary line could never be written. Pausing the activity hit the same
+ * path through `stop()`, so it also crashed on the way out.
+ *
+ * Extracting the formatter makes the failure reachable from a unit test with no
+ * device, a `Choreographer` or a log file — the same reason
+ * [summarizeFrameWindow] is a top-level function. The parentheses around the
+ * concatenation are load-bearing; without them the expression re-parses into the
+ * broken shape above.
+ */
+internal fun formatFrameSummary(
+    summary: FrameSummary,
+    allocatedPerSecond: Double,
+    gcDelta: Long,
+): String =
+    (
+        "n=%d avg=%.2fms p50=%.2f p95=%.2f p99=%.2f max=%.2f jank=%d(>%.1fms) " +
+            "fps~%.0f drop2=%d drop4=%d drop8=%d alloc=%.0fKB/s gc=%d"
+        ).format(
+        summary.count, summary.avgMs, summary.p50Ms, summary.p95Ms,
+        summary.p99Ms, summary.maxMs, summary.jank, summary.jankThresholdMs,
+        summary.fps, summary.over2x, summary.over4x, summary.over8x,
+        allocatedPerSecond / 1024.0, gcDelta,
+    )
 
 /**
  * Reduces one window's sorted frame intervals into the numbers the `frames` line

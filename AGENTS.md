@@ -2040,6 +2040,25 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:12000/TradeQuest-0.1.0
 Always re-verify the public URL and its checksum after a restart; the proxy
 routing is rebuilt with the container.
 
+#### The debug keystore does not survive a restart
+
+The APK signing key lives at `/home/openhands/.android/debug.keystore`, which is
+outside `/workspace` and is therefore **not** persistent. A sandbox restart
+deletes it and Gradle silently generates a new one on the next build, so an APK
+built after a restart has a *different* signature from one built before it and
+will not install over it — the device reports a signature mismatch, not a version
+conflict.
+
+After any restart, check the signature before publishing and tell the user to
+uninstall the previous build first if it changed:
+
+```
+apksigner verify --print-certs app-debug.apk | grep 'SHA-256 digest'
+```
+
+Keep the signing key on persistent storage if over-installing ever needs to be
+guaranteed.
+
 Content: device header, seed result, and **real frame timing**. The frame
 monitor uses `Choreographer.postFrameCallback` and reports avg/p50/p95/p99/max
 intervals plus jank counts over a 300-frame window. This is the only way to get

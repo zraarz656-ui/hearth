@@ -1948,6 +1948,43 @@ line to logcat under `TradeQuestDiag`. Pull it with:
 adb shell run-as com.tradequest.app cat /sdcard/Android/data/com.tradequest.app/files/tradequest-debug.log
 ```
 
+#### Crash and exit reporting
+
+The log originally recorded only what the app chose to say, so a process death
+left a file that simply stopped mid-session with no reason in it — which is what
+the first device capture of the launch crash looked like. Two additions close
+that gap, and they cover different failures:
+
+- `installCrashHandler` records an uncaught exception, writing the stack trace
+  inline rather than through the writer thread. The process is dying, so an
+  enqueued lambda may never run; this is the one place in the class where
+  blocking the caller is correct. It chains to the previous handler, so the
+  platform's own crash behaviour is unchanged.
+- `logPreviousExit` reads `ActivityManager.getHistoricalProcessExitReasons` and
+  reports how the *previous* process ended. This is the only way to see a death
+  that never reaches Java: a native fault inside Compose/Skia, an ANR, or a
+  low-memory kill. The trace stream is read only for the reasons that carry one
+  (`CRASH`, `CRASH_NATIVE`, `ANR`); reading it otherwise throws.
+
+An uncaught exception on *any* thread kills the whole process without running
+activity lifecycle callbacks. So a log with no `[frames] sampling stopped` line —
+which is emitted from `onActivityPaused` — means the process was ended abruptly
+rather than closed by the app. That distinction is what pointed at a hard kill
+rather than a graceful exit.
+
+`getHistoricalProcessExitReasons` is API 30+, and the no-argument convenience
+form only exists from API 35, so the three-argument overload `(null, 0, 1)` is
+used — this package, any pid, most recent entry. The call is guarded by a
+`Build.VERSION.SDK_INT` check because `minSdk` is 26.
+
+#### Build and test require JDK 21
+
+`compileSdk = 36` with Robolectric 4.17 needs **Java 21**, which both the
+installed toolchain and the CI workflow (`java-version: "21"`) provide. Building
+with JDK 17 compiles the app fine but fails every Robolectric test with
+`Android SDK 36 requires Java 21 (have Java 17)`. That failure is environmental,
+not a code defect: check `JAVA_HOME` before suspecting a change.
+
 Content: device header, seed result, and **real frame timing**. The frame
 monitor uses `Choreographer.postFrameCallback` and reports avg/p50/p95/p99/max
 intervals plus jank counts over a 300-frame window. This is the only way to get

@@ -119,6 +119,9 @@ internal object DebugDiagnostics {
     @Volatile
     private var started: Boolean = false
 
+    @Volatile
+    private var crashHandlerInstalled: Boolean = false
+
     /**
      * Single writer thread.
      *
@@ -179,7 +182,163 @@ internal object DebugDiagnostics {
         }
         log("session", "start (pid=${android.os.Process.myPid()})")
         logDevice(context)
+        logPreviousExit(context)
+        installCrashHandler()
         installFrameMonitor(context as Application)
+    }
+
+    /**
+     * Reports how the previous process died, if it did not exit cleanly.
+     *
+     * # Why this is here as well as [installCrashHandler]
+     *
+     * The uncaught-exception handler only sees a crash that unwinds through the
+     * Java/Kotlin runtime. It cannot see a native crash — and although this app
+     * ships no native code of its own, Compose and Skia are native, so a fault
+     * inside the renderer kills the process without ever reaching Java. It also
+     * cannot see an ANR or a low-memory kill, because in both cases the system
+     * ends the process rather than the process throwing.
+     *
+     * `ApplicationExitInfo` is the platform's own record of *why* a process
+     * ended, and it covers all of those cases. Because this build is currently
+     * dying and relaunching, each new start can report the death that preceded
+     * it, which is exactly the loop that has been invisible in the log.
+     *
+     * # Why the stack trace is read separately
+     *
+     * `getTraceInputStream` is populated for a crash or an ANR and empty
+     * otherwise; reading it for a clean exit throws. It is therefore fetched only
+     * for the reasons that carry one, and any failure to read it is recorded as a
+     * gap rather than allowed to abort the device header.
+     *
+     * # Why only the most recent entry
+     *
+     * The interesting death is the one immediately before this launch. Listing
+     * every retained exit would bury it under history on a device that has been
+     * relaunching repeatedly.
+     */
+    private fun logPreviousExit(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+
+        try {
+            val manager = context.getSystemService(Context.ACTIVITY_SERVICE)
+                as? android.app.ActivityManager ?: return
+            // `(null, 0, 1)`: this package (a null name means the caller's own),
+            // any pid, most recent entry only. This three-argument overload is the
+            // one present since API 30; the no-argument convenience form is newer.
+            val info = manager
+                .getHistoricalProcessExitReasons(null, 0, 1)
+                .firstOrNull() ?: return
+
+            val reason = exitReasonName(info.reason)
+            log(
+                "exit",
+                "previous process: reason=$reason importance=${info.importance} " +
+                    "status=${info.status} pss=${info.pss / 1024}KB rss=${info.rss / 1024}KB",
+            )
+            info.description?.let { log("exit", "description=$it") }
+
+            if (info.reason == android.app.ApplicationExitInfo.REASON_CRASH ||
+                info.reason == android.app.ApplicationExitInfo.REASON_CRASH_NATIVE ||
+                info.reason == android.app.ApplicationExitInfo.REASON_ANR
+            ) {
+                try {
+                    val trace = info.traceInputStream?.bufferedReader()?.use { it.readText() }
+                    if (trace.isNullOrBlank()) {
+                        log("exit", "trace: (empty)")
+                    } else {
+                        log("exit", "trace follows")
+                        // Line by line so each entry carries a timestamp and can be
+                        // scrolled to on the in-app log screen.
+                        trace.lineSequence().filter { it.isNotBlank() }.forEach {
+                            log("exit", "  $it")
+                        }
+                    }
+                } catch (error: Exception) {
+                    log("exit", "trace unavailable: ${error::class.java.simpleName}")
+                }
+            }
+        } catch (error: Exception) {
+            log("exit", "exit history unavailable: ${error::class.java.simpleName}")
+        }
+    }
+
+    private fun exitReasonName(reason: Int): String = when (reason) {
+        android.app.ApplicationExitInfo.REASON_CRASH -> "CRASH"
+        android.app.ApplicationExitInfo.REASON_CRASH_NATIVE -> "CRASH_NATIVE"
+        android.app.ApplicationExitInfo.REASON_ANR -> "ANR"
+        android.app.ApplicationExitInfo.REASON_LOW_MEMORY -> "LOW_MEMORY"
+        android.app.ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE -> "EXCESSIVE_RESOURCE_USAGE"
+        android.app.ApplicationExitInfo.REASON_SIGNALED -> "SIGNALED"
+        android.app.ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "DEPENDENCY_DIED"
+        android.app.ApplicationExitInfo.REASON_FREEZER -> "FREEZER"
+        android.app.ApplicationExitInfo.REASON_PACKAGE_STATE_CHANGE -> "PACKAGE_STATE_CHANGE"
+        android.app.ApplicationExitInfo.REASON_PACKAGE_UPDATED -> "PACKAGE_UPDATED"
+        android.app.ApplicationExitInfo.REASON_UNKNOWN -> "UNKNOWN"
+        android.app.ApplicationExitInfo.REASON_EXIT_SELF -> "EXIT_SELF"
+        android.app.ApplicationExitInfo.REASON_INITIALIZATION_FAILURE -> "INITIALIZATION_FAILURE"
+        android.app.ApplicationExitInfo.REASON_PERMISSION_CHANGE -> "PERMISSION_CHANGE"
+        android.app.ApplicationExitInfo.REASON_USER_REQUESTED -> "USER_REQUESTED"
+        android.app.ApplicationExitInfo.REASON_USER_STOPPED -> "USER_STOPPED"
+        android.app.ApplicationExitInfo.REASON_OTHER -> "OTHER"
+        else -> "UNKNOWN($reason)"
+    }
+
+    /**
+     * Records an uncaught exception into the log file, then delegates.
+     *
+     * # Why this exists
+     *
+     * A device capture showed the app dying a few seconds after launch with no
+     * line in this file explaining why. The log is the app's own diagnostics, and
+     * nothing in any source set installs an uncaught-exception handler, so the
+     * stack trace went only to logcat — which needs a cable to read. On a phone in
+     * hand that is the same as losing it. This writes the throwable to the log so
+     * the reason survives on the device, which is where the crash happens.
+     *
+     * # Why it writes synchronously, bypassing [writer]
+     *
+     * The process is about to die. An enqueued lambda may never run, and `log`
+     * would hand the write to [writer]'s thread that is racing the teardown. The
+     * write is done inline here, on the dying thread, and flushed before the
+     * default handler runs. This is the one place in the class where blocking the
+     * caller is correct: there is no next frame to protect.
+     *
+     * # Why the default handler still runs
+     *
+     * This only records. It then chains to the previous handler so the platform's
+     * normal crash behaviour — the "app has stopped" dialog and the logcat entry —
+     * is unchanged. Swallowing the exception here would hide the crash from the
+     * system and leave the process in an undefined state.
+     */
+    private fun installCrashHandler() {
+        synchronized(lock) {
+            if (crashHandlerInstalled) return
+            crashHandlerInstalled = true
+        }
+
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            try {
+                val text = buildString {
+                    append("\n===== UNCAUGHT EXCEPTION =====\n")
+                    append("thread=${thread.name}\n")
+                    append("type=${error::class.java.name}\n")
+                    append("message=${error.message}\n")
+                    append(android.util.Log.getStackTraceString(error))
+                    append("==============================\n\n")
+                }
+                Log.e(TAG, "uncaught exception", error)
+                synchronized(lock) {
+                    logFile?.appendText(text)
+                }
+            } catch (writeError: Throwable) {
+                // A failure to record the crash must not replace the crash. The
+                // default handler below still reports the original.
+                Log.e(TAG, "could not write crash to log", writeError)
+            }
+            previous?.uncaughtException(thread, error)
+        }
     }
 
     /**

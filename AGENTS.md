@@ -2121,12 +2121,15 @@ would not prove the check can fail.
 The check on its own only runs when someone remembers it. Two things run it
 automatically:
 
-**`.githooks/pre-commit`** — blocks a commit that would leave the phase
-document broken. It reads the **staged blob** (`git show :docs/...`), not the
-working tree: a file staged in part differs from what is on disk, and checking
-the working tree would pass a commit whose staged content is still broken. The
-hook is a tracked file in `.githooks/` rather than an edit to `.git/hooks/`,
-because `.git/` is not cloned — a hook kept there would protect one machine.
+**`.githooks/pre-commit`** — blocks a commit that would break the phase
+document or reintroduce a cents price scale. Both checks read the **staged
+blobs** (`git show :docs/...`), not the working tree: a file staged in part
+differs from what is on disk, and checking the working tree would pass a commit
+whose staged content is still broken. The price check scans a snapshot of the
+staged `.kt` files via `--sources`, so a price divided by 100 cannot be hidden
+by staging one version and leaving a clean one on disk. The hook is a tracked
+file in `.githooks/` rather than an edit to `.git/hooks/`, because `.git/` is
+not cloned — a hook kept there would protect one machine.
 
 Enable it once per clone:
 
@@ -2134,9 +2137,11 @@ Enable it once per clone:
 git config core.hooksPath .githooks
 ```
 
-It skips silently when the progress document is not in the commit, when
-`python3` is absent, or when the check script is missing, so it cannot wedge a
-clone that lacks the tooling. `git commit --no-verify` bypasses it deliberately.
+Each check skips silently when it is not relevant: the phase check runs only
+when the progress document is staged, the price check only when a `.kt` file
+is. Both skip when `python3` is absent or their script is missing, so the hook
+cannot wedge a clone that lacks the tooling. `git commit --no-verify` bypasses
+it deliberately.
 
 **`.github/workflows/checks.yml`** — the backstop for a clone that never set
 `core.hooksPath`, and for a `--no-verify` commit. Three jobs: phase

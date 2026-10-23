@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -113,6 +114,87 @@ class RealTreeIsClean(unittest.TestCase):
         # A hardcoded absolute ROOT breaks on any other machine or in CI.
         self.assertTrue((ROOT / "tools" / "check_price_scale.py").exists())
         self.assertTrue((ROOT / "TRADEQUEST_DEVELOPMENT_PLAN.md").exists())
+
+
+class StagedSnapshotMode(unittest.TestCase):
+    """`--sources DIR` scans a tree the caller supplies, not the working tree.
+
+    The pre-commit hook needs this: it snapshots the staged .kt blobs so a
+    regression cannot be hidden by staging one version and leaving a clean one
+    on disk. These tests pin the mode's contract.
+    """
+
+    def run_sources(self, root: Path) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "check_price_scale.py"),
+             "--sources", str(root)],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+
+    def test_clean_snapshot_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "app" / "src" / "main" / "java" / "A.kt"
+            src.parent.mkdir(parents=True)
+            src.write_text("val dollars = priceUnits / 1000\n")
+            result = self.run_sources(Path(tmp))
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_regression_in_snapshot_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "app" / "src" / "main" / "java" / "A.kt"
+            src.parent.mkdir(parents=True)
+            src.write_text("val dollars = priceUnits / 100\n")
+            result = self.run_sources(Path(tmp))
+            self.assertEqual(result.returncode, 1, result.stdout)
+
+    def test_snapshot_paths_are_repo_relative(self):
+        # The hook shows these to a developer mid-commit, so the path must be
+        # one they recognise, not a temp path.
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "app" / "src" / "main" / "java" / "A.kt"
+            src.parent.mkdir(parents=True)
+            src.write_text("val dollars = priceUnits / 100\n")
+            result = self.run_sources(Path(tmp))
+            self.assertIn("app/src/main/java/A.kt:", result.stdout)
+            self.assertNotIn(tmp, result.stdout)
+
+    def test_allowlisted_file_is_skipped_in_a_snapshot(self):
+        # ALLOWED is repo-relative so it applies to a snapshot under a temp root.
+        with tempfile.TemporaryDirectory() as tmp:
+            src = (Path(tmp) / "app" / "src" / "main" / "java" / "com"
+                   / "tradequest" / "app" / "core" / "market" / "PriceScale.kt")
+            src.parent.mkdir(parents=True)
+            src.write_text("val pip = priceUnits / 100\n")
+            result = self.run_sources(Path(tmp))
+            self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_empty_snapshot_passes(self):
+        # A commit that stages no .kt file must not fail for lack of sources.
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.run_sources(Path(tmp))
+            self.assertEqual(result.returncode, 0, result.stdout)
+
+
+class HookWiring(unittest.TestCase):
+    """The hook must actually invoke the check the way these tests assume."""
+
+    def setUp(self):
+        self.hook = (ROOT / ".githooks" / "pre-commit").read_text(encoding="utf-8")
+
+    def test_hook_runs_the_price_check_against_a_snapshot(self):
+        self.assertIn("check_price_scale.py", self.hook)
+        self.assertIn("--sources", self.hook)
+
+    def test_hook_triggers_the_price_check_on_kotlin_changes(self):
+        self.assertIn(r"grep -q '\.kt$'", self.hook)
+
+    def test_hook_still_runs_the_phase_check(self):
+        self.assertIn("check_phase_reports.py", self.hook)
+        self.assertIn("docs/development-progress.md", self.hook)
+
+    def test_hook_is_executable(self):
+        mode = (ROOT / ".githooks" / "pre-commit").stat().st_mode
+        self.assertTrue(mode & 0o111, "pre-commit must be executable")
 
 
 if __name__ == "__main__":

@@ -29,10 +29,11 @@ LIVE_PATTERNS = [
     r"^\s*price\s*[:|].*\bcents\b",
 ]
 
-SOURCE_ROOTS = [
-    ROOT / "app" / "src" / "main" / "java",
-    ROOT / "app" / "src" / "test" / "java",
-]
+SOURCE_SUBDIRS = ("app/src/main/java", "app/src/test/java")
+# PriceScale.kt legitimately contains /100-style pip maths and usdToUnits.
+# Repo-relative, so the same set applies to the working tree and to a staged
+# snapshot scanned under a temp root.
+ALLOWED = {"app/src/main/java/com/tradequest/app/core/market/PriceScale.kt"}
 SOURCE_RULES = [
     # A field, parameter or local named like a cents quantity.
     (r"\b(price|open|high|low|close|stop|target|entry|exit|fill|bid|ask|sl|tp)Cents\b",
@@ -55,9 +56,6 @@ SOURCE_RULES = [
      r"\w*\s*:\s*(Double|Float)\b",
      "money stored as Double/Float"),
 ]
-# PriceScale.kt legitimately contains /100-style pip maths and usdToUnits.
-ALLOWED = {ROOT / "app" / "src" / "main" / "java" / "com" / "tradequest" / "app"
-           / "core" / "market" / "PriceScale.kt"}
 
 
 def check_docs(failures: list[str]) -> None:
@@ -105,21 +103,26 @@ def check_docs(failures: list[str]) -> None:
             failures.append(f"Step 1.1 still declares {bad}")
 
 
-def check_sources(failures: list[str]) -> int:
+def scan_sources(source_root: Path, failures: list[str]) -> int:
     """Check 5: Kotlin sources must not reintroduce cents or Double money.
 
     The doc checks above cannot see code, so a developer could add
     `val priceCents: Int` or a `Double` price field and every doc check would
-    still pass. These rules catch that at the source level. Returns the number
-    of sources scanned.
+    still pass. These rules catch that at the source level.
+
+    [source_root] is the tree to scan: the repo root normally, or a snapshot of
+    the staged blobs when the pre-commit hook calls this. Returns the number of
+    sources scanned.
     """
     source_files: list[Path] = []
-    for root in SOURCE_ROOTS:
+    for sub in SOURCE_SUBDIRS:
+        root = source_root / sub
         if root.exists():
             source_files.extend(sorted(root.rglob("*.kt")))
 
     for src in source_files:
-        if src in ALLOWED:
+        rel = src.relative_to(source_root).as_posix()
+        if rel in ALLOWED:
             continue
         for i, line in enumerate(src.read_text().splitlines(), 1):
             stripped = line.strip()
@@ -134,15 +137,32 @@ def check_sources(failures: list[str]) -> int:
             code = line.split("//", 1)[0]
             for pat, label in SOURCE_RULES:
                 if re.search(pat, code):
-                    failures.append(
-                        f"{src.relative_to(ROOT)}:{i}: {label}: {stripped[:80]}")
+                    failures.append(f"{rel}:{i}: {label}: {stripped[:80]}")
     return len(source_files)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv if argv is None else argv
     failures: list[str] = []
+
+    # `--sources DIR` scans a source tree instead of the working tree, skipping
+    # the doc checks. The pre-commit hook uses it to scan the *staged* blobs: a
+    # file staged in part differs from what is on disk, so scanning the working
+    # tree would pass a commit whose staged content still divides a price by 100.
+    if len(argv) > 2 and argv[1] == "--sources":
+        source_root = Path(argv[2])
+        scanned = scan_sources(source_root, failures)
+        print(f"kotlin sources scanned: {scanned}")
+        if failures:
+            print(f"FAILED ({len(failures)}):")
+            for f in failures:
+                print(f"  - {f}")
+            return 1
+        print("PASSED")
+        return 0
+
     check_docs(failures)
-    scanned = check_sources(failures)
+    scanned = scan_sources(ROOT, failures)
 
     print("=" * 66)
     print("PRICE SCALE CONSISTENCY CHECK")

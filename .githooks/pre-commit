@@ -1,5 +1,6 @@
 #!/bin/sh
-# Pre-commit: refuse a commit that would leave the phase documentation broken.
+# Pre-commit: refuse a commit that would break the phase documentation or
+# reintroduce a cents price scale.
 #
 # Phases 6, 7, 8 and 9 each shipped with code and a commit but with no
 # completion report, and nothing noticed. This hook is the part of the fix that
@@ -13,9 +14,9 @@
 # .git/hooks/pre-commit: .git/ is not cloned, so a hook kept there would protect
 # exactly one machine.
 #
-# The check reads the *staged* blob, not the working tree. A file staged in part
-# differs from what is on disk, and validating the working tree would pass a
-# commit whose staged content is still broken.
+# Both checks read the *staged* blobs, not the working tree. A file staged in
+# part differs from what is on disk, and validating the working tree would pass
+# a commit whose staged content is still broken.
 
 set -e
 
@@ -24,38 +25,54 @@ set -e
 cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
 
 PROGRESS="docs/development-progress.md"
-CHECK="tools/check_phase_reports.py"
-
-if [ ! -f "$CHECK" ]; then
-    echo "pre-commit: $CHECK is missing; skipping phase report check" >&2
-    exit 0
-fi
-
-# Only run when the progress document is part of this commit.
-if ! git diff --cached --name-only | grep -qx "$PROGRESS"; then
-    exit 0
-fi
+PHASE_CHECK="tools/check_phase_reports.py"
+PRICE_CHECK="tools/check_price_scale.py"
 
 if ! command -v python3 >/dev/null 2>&1; then
-    echo "pre-commit: python3 not found; skipping phase report check" >&2
+    echo "pre-commit: python3 not found; skipping checks" >&2
     exit 0
 fi
 
-STAGED_DIR=$(mktemp -d)
-trap 'rm -rf "$STAGED_DIR"' EXIT
-# Keep the real basename so the check's failure messages name the document a
-# reader recognises, not a temp path.
-if ! git show ":$PROGRESS" > "$STAGED_DIR/$(basename "$PROGRESS")" 2>/dev/null; then
-    # No such blob in the index: the very first commit, or an odd index state.
-    # Nothing to validate against, so do not block.
-    echo "pre-commit: could not read the staged $PROGRESS; skipping" >&2
-    exit 0
+STAGED=$(git diff --cached --name-only)
+TMP_DIR=$(mktemp -d)
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+# --- Phase documentation -----------------------------------------------------
+# Only relevant when the progress document is part of this commit.
+if [ -f "$PHASE_CHECK" ] && echo "$STAGED" | grep -qx "$PROGRESS"; then
+    # Keep the real basename so the check's failure messages name the document a
+    # reader recognises, not a temp path.
+    DOC="$TMP_DIR/$(basename "$PROGRESS")"
+    if git show ":$PROGRESS" > "$DOC" 2>/dev/null; then
+        if ! python3 "$PHASE_CHECK" "$DOC"; then
+            echo "" >&2
+            echo "pre-commit: refusing the commit. The phase documentation above" >&2
+            echo "is incomplete. See AGENTS.md section 20 for the required report" >&2
+            echo "fields. To bypass deliberately: git commit --no-verify" >&2
+            exit 1
+        fi
+    else
+        # No such blob in the index: the very first commit, or an odd index
+        # state. Nothing to validate against, so do not block.
+        echo "pre-commit: could not read the staged $PROGRESS; skipping" >&2
+    fi
 fi
 
-if ! python3 "$CHECK" "$STAGED_DIR/$(basename "$PROGRESS")"; then
-    echo "" >&2
-    echo "pre-commit: refusing the commit. The phase documentation above is" >&2
-    echo "incomplete. See AGENTS.md section 20 for the required report fields." >&2
-    echo "To bypass deliberately: git commit --no-verify" >&2
-    exit 1
+# --- Price scale -------------------------------------------------------------
+# Only relevant when Kotlin sources are part of this commit. The check scans a
+# snapshot of the staged .kt files, so a price divided by 100 cannot be slipped
+# in by staging one version and leaving another on disk.
+if [ -f "$PRICE_CHECK" ] && echo "$STAGED" | grep -q '\.kt$'; then
+    SNAP="$TMP_DIR/src"
+    echo "$STAGED" | grep '\.kt$' | while IFS= read -r f; do
+        mkdir -p "$SNAP/$(dirname "$f")"
+        git show ":$f" > "$SNAP/$f" 2>/dev/null || true
+    done
+    if ! python3 "$PRICE_CHECK" --sources "$SNAP"; then
+        echo "" >&2
+        echo "pre-commit: refusing the commit. A Kotlin source above divides a" >&2
+        echo "price by 100, which is the cents scale ADR 0001 removed. Prices are" >&2
+        echo "thousandths of a USD. To bypass deliberately: git commit --no-verify" >&2
+        exit 1
+    fi
 fi

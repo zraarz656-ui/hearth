@@ -41,5 +41,11 @@ class DebugTradeQuestApplication : TradeQuestApplication() {
         ChartDiagnosticsHook.onDraw = { state ->
             DebugDiagnostics.logChartState(state)
         }
+
+        // Brackets each gesture so a slow frame can be attributed to what the
+        // finger was doing, rather than inferred from a changing viewport.
+        ChartDiagnosticsHook.onGesture = { name, started ->
+            DebugDiagnostics.logGesture(name, started)
+        }
     }
 }

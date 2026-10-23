@@ -5,8 +5,15 @@ import android.app.Application
 import android.content.Context
 import android.os.Build
 import android.os.Bundle
+import android.os.Debug
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.Looper
 import android.util.Log
 import android.view.Choreographer
+import android.view.FrameMetrics
+import android.view.Window
+import android.view.WindowManager
 import com.tradequest.app.core.chart.renderer.ChartRenderState
 import java.io.File
 import java.text.SimpleDateFormat
@@ -50,6 +57,46 @@ internal object DebugDiagnostics {
 
     /** Frames per summary block. At 60 Hz this is roughly every 5 seconds. */
     internal const val FRAME_WINDOW = 300
+
+    /**
+     * How often the main-thread stall watchdog re-arms: 50 ms.
+     *
+     * Twenty wake-ups a second is far cheaper than a frame and is enough
+     * resolution to catch a multi-hundred-millisecond block, which is the shape
+     * the device log showed.
+     */
+    internal const val STALL_INTERVAL_MS = 50L
+
+    /**
+     * The `FrameMetrics` stages this log reports, with their short labels.
+     *
+     * Defined once and shared by the accumulator and the formatter, so the
+     * index each value is stored under and the name it is printed with can never
+     * drift apart.
+     *
+     * `GPU_DURATION` is API 31. On older devices the constant still resolves —
+     * it is inlined at compile time — but the platform never populates it, so
+     * including it would print a hard `0.00` that reads like a real measurement.
+     * It is therefore omitted below 31 rather than shown as zero.
+     *
+     * `UNKNOWN_DELAY_DURATION` is included deliberately: it is the time a frame
+     * spent in a state the platform cannot name, and on Android that is usually
+     * where a blocked main thread shows up. Leaving it out would make a blocked
+     * window look like a fast one.
+     */
+    internal val STAGE_LABELS: List<Pair<Int, String>> = buildList {
+        add(FrameMetrics.INPUT_HANDLING_DURATION to "input")
+        add(FrameMetrics.ANIMATION_DURATION to "anim")
+        add(FrameMetrics.LAYOUT_MEASURE_DURATION to "layout")
+        add(FrameMetrics.DRAW_DURATION to "draw")
+        add(FrameMetrics.SYNC_DURATION to "sync")
+        add(FrameMetrics.COMMAND_ISSUE_DURATION to "issue")
+        add(FrameMetrics.SWAP_BUFFERS_DURATION to "swap")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            add(FrameMetrics.GPU_DURATION to "gpu")
+        }
+        add(FrameMetrics.UNKNOWN_DELAY_DURATION to "unknown")
+    }
 
     /**
      * Minimum gap between chart-state log lines: 100 ms, so at most 10 lines/s.
@@ -167,7 +214,13 @@ internal object DebugDiagnostics {
      * chart's draw block.
      */
     fun log(category: String, message: String) {
-        enqueue { line(category, message) }
+        // The thread name is read *here*, on the caller's thread, because
+        // [line] runs on [writer] and would otherwise stamp every line with
+        // "tradequest-debug-log". Attribution is the whole point of this
+        // addition: a stall on the main thread and a stall on a worker are
+        // different bugs.
+        val thread = Thread.currentThread().name
+        enqueue { line(category, message, thread) }
     }
 
     /**
@@ -177,9 +230,9 @@ internal object DebugDiagnostics {
      * file append lands — but it now runs here, off the main thread, so its IPC
      * cost cannot land in a measured frame interval.
      */
-    private fun line(category: String, message: String) {
-        val text = "${timestamp()} [$category] $message\n"
-        Log.i(TAG, "[$category] $message")
+    private fun line(category: String, message: String, thread: String) {
+        val text = "${timestamp()} [$category] ($thread) $message\n"
+        Log.i(TAG, "[$category] ($thread) $message")
         synchronized(lock) {
             logFile?.appendText(text)
         }
@@ -247,6 +300,69 @@ internal object DebugDiagnostics {
             "screen=${metrics.widthPixels}x${metrics.heightPixels} density=${metrics.density} " +
                 "densityDpi=${metrics.densityDpi}",
         )
+
+        // The panel's modes, and which one is active. The previous capture
+        // reported `fps~61` and it was read as the panel's refresh rate; it is
+        // actually `1000 / p50`, the app's own cadence. Without the panel's real
+        // rate in the log there is no way to tell "rendering at the panel rate"
+        // from "rendering at half of it", which is the difference between a
+        // healthy chart and a dropped frame on every vsync.
+        //
+        // Both accessors throw rather than return null for a context that has no
+        // display — Robolectric's application context is one, and it is the
+        // context the unit tests and the seeder use. Guarded rather than
+        // assumed, because an absent display is a gap in the log, not a reason to
+        // take the process down before it has logged anything else.
+        val display = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                context.display
+            } else {
+                @Suppress("DEPRECATION")
+                (context.getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay
+            }
+        } catch (error: Exception) {
+            null
+        }
+        if (display == null) {
+            log("display", "no display available (headless context)")
+        } else {
+            try {
+                val current = display.mode
+                log(
+                    "display",
+                    "refresh=%.2fHz mode=%dx%d@%.2fHz".format(
+                        display.refreshRate, current.physicalWidth, current.physicalHeight,
+                        current.refreshRate,
+                    ),
+                )
+                val modes = display.supportedModes.joinToString(" ") {
+                    "${it.physicalWidth}x${it.physicalHeight}@%.2f".format(it.refreshRate)
+                }
+                log("display", "modes=$modes")
+                log(
+                    "display",
+                    "hdr=%b wideColor=%b".format(display.isHdr, display.isWideColorGamut),
+                )
+            } catch (error: Exception) {
+                log("display", "modes unavailable: ${error::class.java.simpleName}")
+            }
+        }
+
+        // A baseline for the per-window allocation delta. `art.gc.bytes-allocated`
+        // is a monotonic counter, so a rate only exists relative to a previous
+        // reading. Guarded for the same reason as the display block: a missing
+        // statistic must not abort the rest of the device header.
+        try {
+            log(
+                "heap",
+                "start allocated=%dKB limit=%dKB".format(
+                    Debug.getNativeHeapAllocatedSize() / 1024,
+                    Runtime.getRuntime().maxMemory() / 1024,
+                ),
+            )
+        } catch (error: Exception) {
+            log("heap", "unavailable: ${error::class.java.simpleName}")
+        }
     }
 
     // ---------- chart state ----------
@@ -290,7 +406,11 @@ internal object DebugDiagnostics {
 
         lastChartLogNanos = now
         lastChartState = key
-        enqueue { line("chart", key.describe()) }
+        // The thread here is always the main thread, and saying so explicitly is
+        // the point: it proves the draw-path sample is attributed to the frame
+        // callback rather than to a worker.
+        val thread = Thread.currentThread().name
+        enqueue { line("chart", key.describe(), thread) }
     }
 
     @Volatile
@@ -298,6 +418,22 @@ internal object DebugDiagnostics {
 
     @Volatile
     private var lastChartState: ChartStateKey? = null
+
+    /**
+     * Records a gesture boundary.
+     *
+     * Not rate-limited like [logChartState]: these are two lines per gesture, and
+     * the whole point is that the start and end times are exact. Deduplicating
+     * them would destroy the interval they exist to bracket.
+     *
+     * Called on the main thread from the chart's pointer loop, so it does nothing
+     * but hand a string to [writer].
+     */
+    fun logGesture(name: String, started: Boolean) {
+        val thread = Thread.currentThread().name
+        val verb = if (started) "begin" else "end"
+        enqueue { line("gesture", "$verb $name", thread) }
+    }
 
     /**
      * The chart state fields that appear in a log line, as a comparable value.
@@ -329,13 +465,62 @@ internal object DebugDiagnostics {
     @Volatile
     private var frameMonitor: DebugFrameMonitor? = null
 
+    /**
+     * The background thread that receives `FrameMetrics` callbacks.
+     *
+     * `FrameMetrics` can be delivered on a handler of our choosing, and choosing
+     * a background one keeps the per-frame listener off the main thread. The
+     * callback only accumulates into arrays, but it runs 60–120 times a second
+     * and there is no reason for it to share the thread it is measuring.
+     */
+    internal val frameHandler: Handler by lazy {
+        val thread = HandlerThread("tradequest-frame-metrics")
+        thread.start()
+        Handler(thread.looper)
+    }
+
+    /**
+     * Writes one window's stage attribution.
+     *
+     * `avg` and `worst` are indexed by [FrameMetrics] stage constant; this
+     * formats them into the same `name=value` shape as the rest of the log, with
+     * a `us` suffix so a reader can never mistake these for the millisecond
+     * numbers on the `frames` line.
+     */
+    fun logFrameStages(
+        frames: Int,
+        drops: Int,
+        worstTotalNanos: Long,
+        avg: LongArray,
+        worst: LongArray,
+    ) {
+        enqueue {
+            line(
+                "metrics",
+                "n=%d drops=%d worstTotal=%.2fms".format(frames, drops, worstTotalNanos / 1e6),
+                "metrics",
+            )
+            line("metrics", "  avg  " + stageSummary(avg), "metrics")
+            line("metrics", "  worst " + stageSummary(worst), "metrics")
+        }
+    }
+
+    private fun stageSummary(values: LongArray): String =
+        STAGE_LABELS.joinToString(" ") { (stage, name) ->
+            "%s=%.2f".format(name, values.getOrElse(stage) { 0L } / 1e6)
+        }
+
     private fun installFrameMonitor(application: Application) {
         val monitor = DebugFrameMonitor()
+        val metrics = DebugFrameMetrics()
+        val watchdog = DebugStallWatchdog()
 
         application.registerActivityLifecycleCallbacks(
             object : Application.ActivityLifecycleCallbacks {
                 override fun onActivityResumed(activity: Activity) {
                     monitor.start()
+                    watchdog.start()
+                    metrics.attach(activity.window)
                 }
 
                 override fun onActivityPaused(activity: Activity) {
@@ -343,6 +528,8 @@ internal object DebugDiagnostics {
                     // frames, which are meaningless and would drag the average
                     // down, and from waking the device in the background.
                     monitor.stop()
+                    watchdog.stop()
+                    metrics.detach()
                 }
 
                 override fun onActivityCreated(activity: Activity, state: Bundle?) = Unit
@@ -365,6 +552,18 @@ internal object DebugDiagnostics {
  * the budget is 16.7 ms; anything well above it is a frame the user saw late.
  * The samples are kept in a `LongArray` sized once, so monitoring does not
  * allocate per frame — doing so would perturb the very measurement it takes.
+ *
+ * # What this can and cannot say
+ *
+ * The interval between two vsync callbacks is *elapsed wall time*, so it
+ * measures a dropped frame but cannot attribute it: a 132 ms gap looks the
+ * same whether the main thread was blocked, the GPU was slow, or the buffer
+ * queue was full. It is also blind to work that blocks the main thread without
+ * missing a frame.
+ *
+ * [DebugFrameMetrics] and [DebugStallWatchdog] exist to close exactly that gap.
+ * This class stays as the cheap always-on timeline; the other two add
+ * attribution.
  */
 private class DebugFrameMonitor {
 
@@ -374,6 +573,17 @@ private class DebugFrameMonitor {
     private var count = 0
     private var lastFrameNanos = 0L
     private var running = false
+
+    /**
+     * Allocation and GC counters carried between windows.
+     *
+     * `bytes-allocated` is monotonic, so the interesting number is the delta
+     * across the window divided by its duration. Reading it per window rather
+     * than per frame keeps it off the hot path.
+     */
+    private var lastAllocatedBytes = 0L
+    private var lastBlockingGcMs = 0L
+    private var windowStartNanos = 0L
 
     private val callback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
@@ -392,6 +602,9 @@ private class DebugFrameMonitor {
         running = true
         count = 0
         lastFrameNanos = 0L
+        windowStartNanos = System.nanoTime()
+        lastAllocatedBytes = readAllocatedBytes()
+        lastBlockingGcMs = readBlockingGcMs()
         choreographer.postFrameCallback(callback)
         DebugDiagnostics.log("frames", "sampling started")
     }
@@ -404,40 +617,331 @@ private class DebugFrameMonitor {
         DebugDiagnostics.log("frames", "sampling stopped")
     }
 
+    /**
+     * `art.gc.bytes-allocated`, or 0 where the runtime does not expose it.
+     *
+     * Wrapped because a missing statistic must not take the monitor down; an
+     * absent number is a gap in the log, not a crash.
+     */
+    private fun readAllocatedBytes(): Long = try {
+        Debug.getRuntimeStat("art.gc.bytes-allocated").toLong()
+    } catch (error: Exception) {
+        0L
+    }
+
+    private fun readBlockingGcMs(): Long = try {
+        Debug.getRuntimeStat("art.gc.blocking-gc-count").toLong() +
+            Debug.getRuntimeStat("art.gc.gc-count").toLong()
+    } catch (error: Exception) {
+        0L
+    }
+
     private fun flush() {
         if (count == 0) return
 
         val sorted = samples.copyOf(count)
         sorted.sort()
+        val summary = summarizeFrameWindow(sorted, count)
 
-        var total = 0L
-        for (i in 0 until count) total += sorted[i]
-        val avgMs = total.toDouble() / count / 1_000_000.0
+        val now = System.nanoTime()
+        val windowSeconds = if (windowStartNanos == 0L) 0.0 else (now - windowStartNanos) / 1e9
+        val allocated = readAllocatedBytes()
+        val gcCount = readBlockingGcMs()
+        val allocatedPerSecond = if (windowSeconds > 0 && lastAllocatedBytes > 0 && allocated >= lastAllocatedBytes) {
+            (allocated - lastAllocatedBytes) / windowSeconds
+        } else {
+            -1.0
+        }
+        val gcDelta = if (gcCount >= lastBlockingGcMs) gcCount - lastBlockingGcMs else -1L
 
-        fun pct(p: Double): Double =
-            sorted[((count - 1) * p).toInt().coerceIn(0, count - 1)] / 1_000_000.0
-
-        val maxMs = sorted[count - 1] / 1_000_000.0
-
-        // Jank is measured against the panel's own cadence, not a fixed 16.7 ms.
-        // On a 120 Hz screen a 16.7 ms frame is two dropped frames, so a fixed
-        // threshold would report it as fine. The median interval approximates
-        // the refresh period, and anything past 1.5x that is a frame the user
-        // saw late. This also means the number is meaningful without knowing the
-        // device's refresh rate in advance.
-        val baselineMs = pct(0.50)
-        val jankThreshold = baselineMs * 1.5
-        val jank = sorted.count { it / 1_000_000.0 > jankThreshold }
+        lastAllocatedBytes = allocated
+        lastBlockingGcMs = gcCount
+        windowStartNanos = now
 
         DebugDiagnostics.log(
             "frames",
-            "n=%d avg=%.2fms p50=%.2f p95=%.2f p99=%.2f max=%.2f jank=%d(>%.1fms) fps~%.0f"
+            "n=%d avg=%.2fms p50=%.2f p95=%.2f p99=%.2f max=%.2f jank=%d(>%.1fms) " +
+                "fps~%.0f drop2=%d drop4=%d drop8=%d alloc=%.0fKB/s gc=%d"
                 .format(
-                    count, avgMs, baselineMs, pct(0.95), pct(0.99), maxMs,
-                    jank, jankThreshold, if (baselineMs > 0) 1000.0 / baselineMs else 0.0,
+                    summary.count, summary.avgMs, summary.p50Ms, summary.p95Ms,
+                    summary.p99Ms, summary.maxMs, summary.jank, summary.jankThresholdMs,
+                    summary.fps, summary.over2x, summary.over4x, summary.over8x,
+                    allocatedPerSecond / 1024.0, gcDelta,
                 ),
         )
 
         count = 0
+    }
+}
+
+/**
+ * Reduces one window's sorted frame intervals into the numbers the `frames` line
+ * prints.
+ *
+ * A top-level function rather than a member of [DebugFrameMonitor] so it can be
+ * tested without a `Choreographer`, a device or a log file. It is pure: given the
+ * same intervals it produces the same summary, which is what makes a regression
+ * in the jank threshold visible in a unit test rather than only on a phone.
+ *
+ * [sorted] must be ascending, and its first [count] entries the samples.
+ */
+internal fun summarizeFrameWindow(sorted: LongArray, count: Int): FrameSummary {
+    var total = 0L
+    for (i in 0 until count) total += sorted[i]
+    val avgMs = total.toDouble() / count / 1_000_000.0
+
+    fun pct(p: Double): Double =
+        sorted[((count - 1) * p).toInt().coerceIn(0, count - 1)] / 1_000_000.0
+
+    // Jank is measured against the panel's own cadence, not a fixed 16.7 ms. On a
+    // 120 Hz screen a 16.7 ms frame is two dropped frames, so a fixed threshold
+    // would report it as fine. The median interval approximates the refresh
+    // period, and anything past 1.5x that is a frame the user saw late. This also
+    // means the number is meaningful without knowing the device's refresh rate in
+    // advance.
+    val p50 = pct(0.50)
+    val jankThreshold = p50 * 1.5
+    var jank = 0
+    var over2 = 0
+    var over4 = 0
+    var over8 = 0
+    for (i in 0 until count) {
+        val ms = sorted[i] / 1_000_000.0
+        if (ms > jankThreshold) jank++
+        if (ms > p50 * 2) over2++
+        if (ms > p50 * 4) over4++
+        if (ms > p50 * 8) over8++
+    }
+
+    return FrameSummary(
+        count = count,
+        avgMs = avgMs,
+        p50Ms = p50,
+        p95Ms = pct(0.95),
+        p99Ms = pct(0.99),
+        maxMs = sorted[count - 1] / 1_000_000.0,
+        jank = jank,
+        jankThresholdMs = jankThreshold,
+        fps = if (p50 > 0) 1000.0 / p50 else 0.0,
+        over2x = over2,
+        over4x = over4,
+        over8x = over8,
+    )
+}
+
+/**
+ * One window's frame-interval statistics, as printed on the `frames` line.
+ *
+ * A value type rather than a formatted string so the numbers survive a test
+ * assertion; [summarizeFrameWindow] is the only producer.
+ */
+internal data class FrameSummary(
+    val count: Int,
+    val avgMs: Double,
+    val p50Ms: Double,
+    val p95Ms: Double,
+    val p99Ms: Double,
+    val maxMs: Double,
+    val jank: Int,
+    val jankThresholdMs: Double,
+    val fps: Double,
+    val over2x: Int,
+    val over4x: Int,
+    val over8x: Int,
+)
+
+/**
+ * Per-frame stage attribution, from the platform's own [FrameMetrics].
+ *
+ * # Why this exists
+ *
+ * [DebugFrameMonitor] says a frame took 132 ms. It cannot say where the time
+ * went, and the four candidates — input, layout, draw, GPU — have completely
+ * different fixes. This listener reports each stage separately, so a window's
+ * slow frames can be attributed instead of guessed at.
+ *
+ * # Why the numbers are not added up here
+ *
+ * `FrameMetrics` reports nanoseconds per stage. They are summed per window into
+ * fixed arrays and reduced on [DebugDiagnostics.writer]'s thread, so the
+ * callback itself does one array write per stage and nothing else. It runs on
+ * the main thread for every frame, so anything more would be the instrument
+ * measuring itself — the failure `DebugDiagnostics` already documents.
+ */
+private class DebugFrameMetrics {
+
+    private val window = DebugDiagnostics.FRAME_WINDOW
+
+    /** Sums per stage, indexed by [FrameMetrics]' own stage constants. */
+    private val sums = LongArray(STAGE_COUNT)
+    private var frames = 0
+
+    /**
+     * The slowest single frame's per-stage split.
+     *
+     * A window's *average* stage cost hides the one frame that stalled; the
+     * worst frame is the one the user felt, so its breakdown is kept whole.
+     */
+    private val worst = LongArray(STAGE_COUNT)
+    private var worstTotal = 0L
+
+    private val listener = Window.OnFrameMetricsAvailableListener { _, metrics, dropCount ->
+        // A non-zero drop count means frames were dropped before this one, which
+        // is itself a finding: it means the buffer queue backed up.
+        if (dropCount > 0) drops += dropCount
+
+        val total = metrics.getMetric(FrameMetrics.TOTAL_DURATION)
+        for (stage in STAGES) {
+            sums[stage] += metrics.getMetric(stage)
+        }
+        frames++
+        if (total > worstTotal) {
+            worstTotal = total
+            for (stage in STAGES) worst[stage] = metrics.getMetric(stage)
+        }
+        if (frames >= window) flush()
+    }
+
+    private var drops = 0
+
+    private var attachedWindow: Window? = null
+
+    fun attach(window: Window) {
+        if (attachedWindow === window) return
+        detach()
+        try {
+            window.addOnFrameMetricsAvailableListener(listener, DebugDiagnostics.frameHandler)
+            attachedWindow = window
+        } catch (error: Exception) {
+            // Not fatal: some devices reject the listener. The frame timeline
+            // still works, and the log records that attribution is unavailable.
+            DebugDiagnostics.log("metrics", "unavailable: ${error::class.java.simpleName}")
+        }
+    }
+
+    fun detach() {
+        attachedWindow?.removeOnFrameMetricsAvailableListener(listener)
+        attachedWindow = null
+    }
+
+    private fun flush() {
+        if (frames == 0) return
+        val n = frames
+        val dropTotal = drops
+        val worstTotalLocal = worstTotal
+        val avg = LongArray(STAGE_COUNT)
+        val worstLocal = LongArray(STAGE_COUNT)
+        for (stage in STAGES) {
+            avg[stage] = sums[stage] / n
+            worstLocal[stage] = worst[stage]
+        }
+
+        DebugDiagnostics.logFrameStages(n, dropTotal, worstTotalLocal, avg, worstLocal)
+
+        for (stage in STAGES) sums[stage] = 0
+        frames = 0
+        drops = 0
+        worstTotal = 0L
+        for (stage in STAGES) worst[stage] = 0
+    }
+
+    private companion object {
+        /**
+         * The stages worth separating. Shared with the formatter so the two can
+         * never disagree about which index means what.
+         *
+         * `GPU_DURATION` is API 31 and is excluded below it by
+         * [DebugDiagnostics.STAGE_LABELS] rather than reported as a zero.
+         */
+        val STAGES = DebugDiagnostics.STAGE_LABELS.map { it.first }.toIntArray()
+        const val STAGE_COUNT = 16
+    }
+}
+
+/**
+ * Reports when the main thread was blocked long enough to matter.
+ *
+ * # Why the frame monitor is not enough
+ *
+ * A blocked main thread only shows up as jank if a frame was due. Work that
+ * runs between frames — the dataset load and path build on resume are exactly
+ * this — can block for hundreds of milliseconds and leave the frame cadence
+ * looking clean, because no vsync was missed. The device log's resume-shaped
+ * spikes are the other side of the same coin: the frame monitor sees them but
+ * cannot name the thread.
+ *
+ * This watchdog posts to the main looper every [DebugDiagnostics.STALL_INTERVAL_MS]
+ * and measures how late each post actually ran. A post that arrives 300 ms late
+ * means the main thread was blocked for 300 ms, whatever the frame cadence was
+ * doing. It names no cause, but it turns "a frame was late" into "the main
+ * thread was blocked, and here is when".
+ *
+ * The measured latency is the gap between the intended and actual run time, so
+ * the watchdog's own wake-up cost is included in its own reading. That bias is
+ * fixed and small — a Handler wake-up is far below the tens of milliseconds
+ * this is looking for — and is preferable to trying to subtract a correction
+ * that would drift.
+ */
+private class DebugStallWatchdog {
+
+    private val handler = Handler(Looper.getMainLooper())
+
+    /** Longest block seen since the last report. */
+    private var worstMs = 0L
+
+    /** How many wake-ups were late enough to be worth naming. */
+    private var stalls = 0
+
+    private var running = false
+    private var expectedNanos = 0L
+    private var lastReportNanos = 0L
+
+    private val tick = object : Runnable {
+        override fun run() {
+            if (!running) return
+            val now = System.nanoTime()
+            if (expectedNanos != 0L) {
+                val lateMs = (now - expectedNanos) / 1_000_000L
+                if (lateMs > worstMs) worstMs = lateMs
+                // 100 ms is well past a frame but short enough that a genuine
+                // stall is never missed. Below it, scheduler jitter would
+                // otherwise report constantly.
+                if (lateMs >= STALL_REPORT_MS) {
+                    stalls++
+                    DebugDiagnostics.log("stall", "main thread blocked ${lateMs}ms")
+                }
+            }
+            if (lastReportNanos == 0L) lastReportNanos = now
+            if (now - lastReportNanos >= REPORT_INTERVAL_NANOS) {
+                DebugDiagnostics.log(
+                    "stall",
+                    "window worst=%dms count=%d".format(worstMs, stalls),
+                )
+                worstMs = 0
+                stalls = 0
+                lastReportNanos = now
+            }
+            expectedNanos = System.nanoTime() + STALL_INTERVAL_NANOS
+            handler.postDelayed(this, DebugDiagnostics.STALL_INTERVAL_MS)
+        }
+    }
+
+    fun start() {
+        if (running) return
+        running = true
+        expectedNanos = 0L
+        lastReportNanos = 0L
+        handler.postDelayed(tick, DebugDiagnostics.STALL_INTERVAL_MS)
+    }
+
+    fun stop() {
+        running = false
+        handler.removeCallbacks(tick)
+    }
+
+    private companion object {
+        const val STALL_REPORT_MS = 100L
+        const val STALL_INTERVAL_NANOS = DebugDiagnostics.STALL_INTERVAL_MS * 1_000_000L
+        const val REPORT_INTERVAL_NANOS = 5_000_000_000L
     }
 }

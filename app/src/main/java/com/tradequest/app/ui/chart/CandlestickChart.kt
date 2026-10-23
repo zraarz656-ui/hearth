@@ -228,6 +228,16 @@ fun CandlestickChart(
                         )
                         val onPriceAxis = gesture == ChartGesture.PRICE_AXIS_SCALE
 
+                        // Debug-only: brackets the gesture so a slow frame can be
+                        // correlated with "a finger was down, and this is what it
+                        // was doing". Called at each exit below as well as the
+                        // fall-through, because a crosshair release and a fling
+                        // both end the gesture without reaching the bottom.
+                        ChartDiagnosticsHook.onGesture?.invoke(gesture.name, true)
+                        val endGesture = {
+                            ChartDiagnosticsHook.onGesture?.invoke(gesture.name, false)
+                        }
+
                         // Step 9.4: the zoom bounds are candle widths (2dp..40dp), so
                         // they are derived from the plot the user is actually looking
                         // at. `PointerInputScope` is a `Density`, so the dp conversion
@@ -347,12 +357,18 @@ fun CandlestickChart(
                                 )
 
                                 if (promoted != gesture) {
+                                    // Close the gesture being replaced before
+                                    // opening its successor, so every `begin` has
+                                    // a matching `end` and a reader can trust the
+                                    // pairing when measuring a gesture's duration.
+                                    ChartDiagnosticsHook.onGesture?.invoke(gesture.name, false)
                                     gesture = promoted
                                     if (gesture == ChartGesture.CROSSHAIR) {
                                         // The fling must not resume underneath the
                                         // crosshair.
                                         fling.cancel()
                                     }
+                                    ChartDiagnosticsHook.onGesture?.invoke(promoted.name, true)
                                 }
 
                                 // A finger that has moved or gained a partner is no
@@ -463,6 +479,7 @@ fun CandlestickChart(
                         if (gesture == ChartGesture.CROSSHAIR) {
                             crosshair = null
                             latestOnCrosshairChange(null)
+                            endGesture()
                             return@awaitEachGesture
                         }
 
@@ -486,21 +503,31 @@ fun CandlestickChart(
                                     latestOnViewportChange(restored)
                                 }
                                 lastTapUpMs = 0L
+                                endGesture()
                                 return@awaitEachGesture
                             }
                             lastTapUpMs = upMs
                             lastTapPosition = upPosition
+                            endGesture()
                             return@awaitEachGesture
                         }
 
                         // A touch that scaled the axis does not also throw the chart:
                         // the two axes are independent, and a fling is horizontal.
-                        if (onPriceAxis) return@awaitEachGesture
+                        if (onPriceAxis) {
+                            endGesture()
+                            return@awaitEachGesture
+                        }
 
                         // Otherwise throw the chart if the drag ended fast enough to be
                         // a flick (Step 9.2).
                         val velocityX = tracker.calculateVelocity().x
                         if (ChartFling.isFling(velocityX)) {
+                            // The finger is up but the chart is still moving, so this
+                            // is the one gesture whose cost lands *after* the release.
+                            // Naming it FLING separates it from the pan that preceded
+                            // it, which is what a frame-attribution pass needs.
+                            ChartDiagnosticsHook.onGesture?.invoke("FLING", true)
                             fling.start(scope) {
                                 runFling(
                                     velocityPxPerSec = velocityX,
@@ -513,8 +540,10 @@ fun CandlestickChart(
                                         latestOnViewportChange(next)
                                     },
                                 )
+                                ChartDiagnosticsHook.onGesture?.invoke("FLING", false)
                             }
                         }
+                        endGesture()
                     }
                 },
         ) {

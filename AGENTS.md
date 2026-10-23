@@ -2040,6 +2040,18 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:12000/TradeQuest-0.1.0
 Always re-verify the public URL and its checksum after a restart; the proxy
 routing is rebuilt with the container.
 
+#### Build and publish in one step
+
+`/workspace/apk-share/build-and-publish.sh` runs the unit tests, builds both
+APKs, restores the debug keystore from its backup, signs the release, writes
+`SHA256.txt`, and restarts the watchdog if it is down. Prefer it over the
+individual `gradlew` invocations: it encodes the keystore and server steps that a
+restart breaks. It lives on persistent storage because `/tmp` is not.
+
+```
+/workspace/apk-share/build-and-publish.sh
+```
+
 #### The debug keystore does not survive a restart
 
 The APK signing key lives at `/home/openhands/.android/debug.keystore`, which is

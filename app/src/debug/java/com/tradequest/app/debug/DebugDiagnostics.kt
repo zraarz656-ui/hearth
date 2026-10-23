@@ -467,18 +467,20 @@ internal object DebugDiagnostics {
         // from "rendering at half of it", which is the difference between a
         // healthy chart and a dropped frame on every vsync.
         //
-        // Both accessors throw rather than return null for a context that has no
-        // display — Robolectric's application context is one, and it is the
-        // context the unit tests and the seeder use. Guarded rather than
-        // assumed, because an absent display is a gap in the log, not a reason to
-        // take the process down before it has logged anything else.
+        // Resolved through `DisplayManager`, not `context.display`.
+        //
+        // `start` runs from `Application.onCreate`, and an `Application` context
+        // has no display association: `context.display` returns null and the
+        // deprecated `WindowManager.defaultDisplay` throws. A device capture
+        // proved this the hard way — it reported "no display available (headless
+        // context)" while the app was rendering at 61 fps on a 120 Hz panel, so
+        // the block below never ran where it was most needed. The default display
+        // is the panel the app's window is on, and `DisplayManager` can be asked
+        // for it from any context.
         val display = try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                context.display
-            } else {
-                @Suppress("DEPRECATION")
-                (context.getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay
-            }
+            val manager = context.getSystemService(Context.DISPLAY_SERVICE)
+                as? android.hardware.display.DisplayManager
+            manager?.getDisplay(android.view.Display.DEFAULT_DISPLAY)
         } catch (error: Exception) {
             null
         }

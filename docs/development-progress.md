@@ -1867,16 +1867,44 @@ Tests Failed:
 
 Known Issues:
 - No on-device verification of the dashboard, the start button or the abandon dialog
-- The catch-up path is unverified end-to-end against real elapsed time
+- The catch-up path is verified on device at 1x over 1.5 s, but not over an hour
 
 Unverified Requirements:
 - The Compose UI of the dashboard and the Market Library start action
-- That a season left for an hour advances on reopen as intended
+- That a season left for an *hour* advances on reopen as intended (the
+  device run confirmed 1x over 1.5 s, not a long absence)
 - Score weights and bands are the plan's figures, not calibrated against play
 
 Next Phase:
 - Phase 12. Phases 12-14 remain; the hard gate is after Phase 14.
 ```
+
+### Verified on device
+
+`DebugSelfCheck` was run on a HONOR BRP-NX1 (Android 16, API 36, arm64-v8a) and
+reported **17 passed, 0 failed**, twice, with identical figures across the two
+runs — which is itself evidence that the scratch-database clean-up works.
+
+| Claim | Result |
+| --- | --- |
+| Season created and clock bound on start (11.1) | PASS |
+| `createLiveSession` returns a tradable session (10.1) | PASS, opens at $10,000 |
+| Market buy and close through the app's session (10.7) | PASS, net PnL $56.30 on 0.10 lot |
+| `syncChallenge` evaluates and persists (11.5/11.9) | PASS, score 41, TRADER |
+| Terminal season is not re-evaluated (11.9) | PASS, returns null |
+| A 1x challenge advances with real elapsed time | PASS, 1501 ms and 1502 ms over a 1500 ms wait |
+| Catch-up replays what the clock owes (7.7) | PASS |
+| Season and clock binding survive a restart (11.1/3.3) | PASS, `onAppStart` rebinds |
+| Room on a device's SQLite | PASS, real schema validation on real files |
+
+Independent corroboration the harness did not assert: the chart's own `sim=`
+column advanced at ~1x in lockstep with the wall clock (59.9 s simulated over
+58.0 s real), and the bar count stepped `1 -> 2` at the 60-second mark — one M1
+candle per minute, so the clock is driving the chart and not merely reporting.
+
+This closes the Phase 11 "catch-up path is unverified end-to-end against real
+elapsed time" issue. What remains unverified is a *long* absence (an hour rather
+than 1.5 s) and the Compose UI of the dashboard itself.
 
 ### Added after the fact: the on-device harness (`DebugSelfCheck`)
 

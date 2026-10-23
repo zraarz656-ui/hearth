@@ -2171,6 +2171,21 @@ real jank. `[chart]` lines appear only when the drawn viewport changes, so a pan
 or pinch produces a run of lines whose `visible=` and `first=` values show
 whether the gesture reached the renderer at all.
 
+### The device header needs a context that has a display
+
+`logDevice` resolved the panel through `context.display`, and `start` runs from
+`Application.onCreate`. An `Application` context has no display association, so
+the lookup failed and the header printed "no display available (headless
+context)" — on a device that was rendering at 61 fps on a 120 Hz panel. The
+guard written for Robolectric fired on real hardware instead, and the panel rate
+never reached the log, which is the one thing that block exists to record.
+
+Resolve it through `DisplayManager.getDisplay(DEFAULT_DISPLAY)`, which answers
+from any context. **The general lesson:** a fallback that swallows an exception
+will hide a wrong *context* as readily as a genuinely absent device, so a
+capture that says "unavailable" is worth checking against what the app is
+visibly doing.
+
 ### The instrument must not measure itself
 
 The first device capture showed jank in exactly the windows that contained a pan

@@ -109,6 +109,27 @@ fun CandlestickChart(
      * OHLC and disagreeing with what is drawn.
      */
     onCrosshairChange: (CrosshairReadout?) -> Unit = {},
+    /**
+     * Called when a touch lands on a draggable order line (Step 10.4).
+     *
+     * Returns true when a line was grabbed, which is what makes the touch an
+     * [ChartGesture.ORDER_LINE_DRAG] rather than a pan. The chart supplies the tap's
+     * price and a tolerance already converted into price units from its own scale,
+     * because only the chart knows how many units a finger's width covers; which
+     * line that selects is the caller's decision.
+     *
+     * # Why the callbacks are price-based rather than passing a line object
+     *
+     * `core/chart` draws geometry and must not know what an order is. Naming the
+     * grabbed line in the chart would pull the trading domain into the renderer. So
+     * the chart reports prices and the screen decides which line they mean — the
+     * same split as [onViewportChange].
+     */
+    onOrderLineGrab: (tapPriceUnits: Int, toleranceUnits: Int) -> Boolean = { _, _ -> false },
+    /** Called as a grabbed order line is dragged, with the price under the finger. */
+    onOrderLineDrag: (priceUnits: Int) -> Unit = {},
+    /** Called when a dragged order line is released. */
+    onOrderLineRelease: () -> Unit = {},
 ) {
     val textMeasurer = rememberTextMeasurer()
     val renderer = remember(textMeasurer) { ChartRenderer(textMeasurer) }
@@ -160,6 +181,9 @@ fun CandlestickChart(
     // when the pointer loop began.
     val latestOnViewportChange by rememberUpdatedState(onViewportChange)
     val latestOnCrosshairChange by rememberUpdatedState(onCrosshairChange)
+    val latestOnOrderLineGrab by rememberUpdatedState(onOrderLineGrab)
+    val latestOnOrderLineDrag by rememberUpdatedState(onOrderLineDrag)
+    val latestOnOrderLineRelease by rememberUpdatedState(onOrderLineRelease)
 
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
     val scope = rememberCoroutineScope()
@@ -221,9 +245,39 @@ fun CandlestickChart(
                         // lines, drawing handles and the armed drawing tool are
                         // reserved slots in the same rule; none exist yet, so all
                         // three are false.
+                        // Step 9.10: where the gesture *starts* decides what it is.
+                        // The price gutter is checked first, and the order-line hit
+                        // test is only run when the touch is *not* in the gutter: a
+                        // grab callback has the side effect of arming a drag, so it
+                        // must not fire for a touch that was aimed at the axis.
+                        val startedOnPriceAxis =
+                            ChartPriceScale.isOnPriceAxis(down.position.x, plotWidthPx)
+                        val startedOnOrderLine = if (startedOnPriceAxis) {
+                            false
+                        } else {
+                            // Step 10.4: a touch on a draggable order line wins over a
+                            // pan, so a trader can move a stop without the chart sliding
+                            // sideways underneath it. The tolerance is a finger's width
+                            // converted to price units through the range on screen,
+                            // because the hit test works in prices and only the chart
+                            // knows how many units a finger spans.
+                            val range = drawnRangeFor(viewport)
+                            val tolerance = ChartPriceScale.toleranceUnits(
+                                plotHeightPx = plotHeightPx,
+                                range = range,
+                            ).toInt()
+                            val tapPrice = ChartPriceScale.priceAt(
+                                y = down.position.y,
+                                plotHeightPx = plotHeightPx,
+                                range = range,
+                            ).toInt()
+                            latestOnOrderLineGrab(tapPrice, tolerance)
+                        }
+
                         var gesture = ChartGesturePriority.resolve(
                             ChartHitTest(
-                                onPriceAxis = ChartPriceScale.isOnPriceAxis(down.position.x, plotWidthPx),
+                                onPriceAxis = startedOnPriceAxis,
+                                onOrderLine = startedOnOrderLine,
                             ),
                         )
                         val onPriceAxis = gesture == ChartGesture.PRICE_AXIS_SCALE
@@ -431,6 +485,19 @@ fun CandlestickChart(
                                         next = current.copy(autoScale = false)
                                     }
                                 }
+                            } else if (gesture == ChartGesture.ORDER_LINE_DRAG) {
+                                // Step 10.4: the grabbed line follows the finger's
+                                // price. Nothing else moves — not the viewport, not the
+                                // crosshair — because a trader adjusting a stop wants
+                                // the chart still, so they can see the level against the
+                                // candles.
+                                val range = drawnRangeFor(current)
+                                val price = ChartPriceScale.priceAt(
+                                    y = centroid.y,
+                                    plotHeightPx = plotHeightPx,
+                                    range = range,
+                                ).toInt()
+                                latestOnOrderLineDrag(price)
                             } else if (gesture == ChartGesture.CROSSHAIR) {
                                 // While the crosshair is up, the finger moves it and
                                 // nothing else: panning at the same time would drag the
@@ -506,6 +573,17 @@ fun CandlestickChart(
                         if (gesture == ChartGesture.CROSSHAIR) {
                             crosshair = null
                             latestOnCrosshairChange(null)
+                            endGesture()
+                            return@awaitEachGesture
+                        }
+
+                        // A released order line commits its move (Step 10.4). The
+                        // release is announced rather than the drag being submitted
+                        // per frame: one command per gesture is what the engine's
+                        // look-back guard expects, and a drag of a hundred frames
+                        // would otherwise be a hundred commands.
+                        if (gesture == ChartGesture.ORDER_LINE_DRAG) {
+                            latestOnOrderLineRelease()
                             endGesture()
                             return@awaitEachGesture
                         }

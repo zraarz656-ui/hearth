@@ -28,8 +28,8 @@ data class SeasonBinding(
  *
  * # Why the instant arrives as a flow
  *
- * `SimulationClock` owns no ticker — it derives the instant from a stored anchor
- * and the wall clock — so something has to poll it, and that something is not the
+ * `SimulationClock` owns no ticker ŌĆö it derives the instant from a stored anchor
+ * and the wall clock ŌĆö so something has to poll it, and that something is not the
  * ViewModel. Polling inside the ViewModel would put a perpetual `delay` loop in
  * the unit tests, where a test scheduler can never reach idle and every
  * `advanceUntilIdle` hangs. As a flow, the cadence belongs to the production
@@ -39,8 +39,8 @@ data class SeasonBinding(
  *
  * [currentSeason] returning null, or [simInstants] completing without emitting,
  * both mean "no season is running". The chart then shows the dataset as plain
- * history. That is an expected state — the app can be opened before a season
- * exists — so it is a value, not an error.
+ * history. That is an expected state ŌĆö the app can be opened before a season
+ * exists ŌĆö so it is a value, not an error.
  */
 interface TradingSessionSource {
 
@@ -64,4 +64,30 @@ interface TradingSessionSource {
      * anything.
      */
     fun simInstants(): Flow<Long>
+
+    /**
+     * The balance a new season starts with, in micro-dollars (Step 6.10).
+     *
+     * Read here rather than passed by the screen because the Trading feature must
+     * not know where a season's balance is stored.
+     */
+    suspend fun startingBalanceMicros(): Long
+
+    /**
+     * Builds a live trading session for the running season, or null when there is
+     * nothing to trade (Phase 10, Step 10.1).
+     *
+     * # Why the session is built here and not in the ViewModel
+     *
+     * A session needs a [TradingContext] — the season id, the news instants that
+     * widen the spread, and the risk policy — and the rule "one season trades one
+     * dataset under one rule set" is enforced where both are known, which is the
+     * composition root. The ViewModel receives a ready session and never learns how
+     * one is assembled, exactly as it receives a [SeasonBinding] rather than a
+     * `SeasonEntity`.
+     *
+     * Suspending because it reads the dataset's bounds and news, the same reads
+     * [com.tradequest.app.core.replay.ReplayProcessor] performs.
+     */
+    suspend fun createLiveSession(): LiveTradingSession?
 }

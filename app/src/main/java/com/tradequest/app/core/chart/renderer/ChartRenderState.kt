@@ -59,6 +59,20 @@ data class ChartRenderState(
      * from `ChartDiagnosticsHook` is a crosshair that cannot be debugged.
      */
     val crosshair: CrosshairPosition? = null,
+    /**
+     * Trade brackets to draw over the candles (Steps 10.3, 10.5).
+     *
+     * Empty for a purely historical chart. Each group is one position, order or
+     * preview bracket.
+     */
+    val overlays: List<OverlayGroup> = emptyList(),
+    /**
+     * Entry and exit arrows (Step 10.8).
+     *
+     * Separate from [overlays] because a marker is tied to a bar index while a
+     * bracket is a set of price levels spanning the plot.
+     */
+    val markers: List<TradeMarker> = emptyList(),
 ) {
     /**
      * Total bars the x-axis must place: revealed candles plus the forming one.

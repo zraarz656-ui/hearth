@@ -1444,3 +1444,212 @@ Unverified Requirements:
 Next Phase:
 - Phase 10 — Interactive chart trading
 ```
+
+## Phase 10 — Interactive chart trading — COMPLETE
+
+Put the trade lifecycle on the chart: place from a ticket, see the bracket drawn,
+drag a line, close from the panel. The renderer stays ignorant of trading; the
+feature layer is the only place the two meet.
+
+> **Gate.** The plan asks to stop after Phase 10. Nothing in Phase 11 or beyond is
+> started here.
+
+### Implemented
+
+- **Live session at the composition root (10.1).** `TradingSessionSource` gained
+  `createLiveSession()`, mirroring `replayProcessorFor`, so the screen is handed a
+  session rather than building one. `AppContainer` is the only place that knows how
+  a season becomes a tradeable session.
+- **Market and pending orders (10.1, 10.2).** `LiveTradingSession.placeMarket`,
+  `placePending` and `submit` drive the existing `TradingEngine`. The ticket seeds a
+  market order with the current bid so its preview can size before submission.
+- **Order-line overlays (10.3).** `TradeOverlayMapper` turns positions, pending
+  orders and the ticket preview into `OverlayGroup`s. It is the seam rule 3
+  requires: the mapper is in the feature, the render types are in `core/chart`, and
+  neither knows about the other.
+- **Order-line dragging (10.4).** A touch that lands within tolerance of a
+  draggable line grabs it; the drag reports prices; the release submits one command.
+  `OverlayLineHitTester` (in `core/chart`, over drawn types) picks the line;
+  `ChartPriceScale.priceAt` and `toleranceUnits` convert pixels to price units.
+- **Bracket preview (10.5).** The ticket shows risk, reward and R:R from
+  `BracketEconomics` while the trader types.
+- **Risk-lock sizing (10.6).** The `RiskLockBps` presets size the trade from its
+  stop, via the existing `PositionSizing` arithmetic; the size field is replaced by
+  the computed lot size.
+- **Position management (10.7).** Close, cancel and move-to-breakeven are wired to
+  the panel, each with the engine's refusal surfaced as a message.
+- **Entry and exit markers (10.8).** `TradeOverlayMapper.markers` resolves a closed
+  trade's open and close times to buffer indices; the renderer draws arrows.
+- **Account strip and positions panel (10.9).** Balance, floating PnL, position
+  count and the open/closed lists.
+- **No accidental trades (10.10).** Buy and Sell open a ticket rather than
+  submitting; an incomplete ticket is refused in the feature with a message and
+  never reaches the engine.
+
+### Files created
+
+- `feature/trading/TradingPanelState.kt` — the panel's state model (pure).
+- `feature/trading/TradeOverlayMapper.kt` — trading types → chart render types.
+- `feature/trading/TradingControls.kt` — account strip, buy/sell bar, risk-lock row.
+- `feature/trading/OrderTicketSheet.kt` — the ticket and its parsing helpers.
+- `feature/trading/PositionsPanel.kt` — open positions, pending orders, history.
+- `core/chart/renderer/OverlayLineHitTester.kt` — the line hit test (pure).
+- Tests: `OverlayLineHitTesterTest.kt`, `TradeOverlayMapperTest.kt`,
+  `OrderTicketParsingTest.kt`, plus the Phase 10 cases in `TradingViewModelTest.kt`.
+
+### Files modified
+
+- `feature/trading/TradingViewModel.kt` — panel state, ticket, sheets, command
+  methods, the grab/drag/release gesture, and re-marking on each clock tick.
+- `feature/trading/LiveTradingSession.kt` — `placeMarket`, `placePending`,
+  `modifyOrder`, `modifyPosition`, `closePosition`, `cancelOrder`, `armBreakeven`,
+  `bidPrices`, `markToMarket`.
+- `core/trading/TradingEngine.kt` — a public per-position mark accessor.
+- `core/chart/renderer/ChartPriceScale.kt` — `priceAt`, `toleranceUnits`,
+  `TOUCH_TOLERANCE_DP`.
+- `core/chart/renderer/ChartRenderState.kt` — carries overlays and markers.
+- `ui/chart/CandlestickChart.kt` — order-line gesture resolution and drag.
+- `di/AppContainer.kt` — the live-session factory.
+
+### Decisions worth recording
+
+- **The hit tester lives in `core/chart`, not `core/trading`.** It operates on
+  `OverlayGroup`, the renderer's own type. Putting it in the trading domain would
+  require that domain to know the renderer's types, which inverts the dependency the
+  seam exists to prevent. It is pure geometry and is tested with hand-built overlays
+  and no engine.
+- **The tolerance is converted to price units by the chart, not accepted as
+  pixels.** The hit test must not know about a screen — it is pure Kotlin. The chart
+  owns the visible range, so `ChartPriceScale.toleranceUnits` does the conversion and
+  the tester works in prices. `TOUCH_TOLERANCE_DP` is 24dp, half the Material minimum
+  touch target, rather than the 8dp a touch-slop check would use: a level a trader
+  aims at needs a target a finger can hit.
+- **A drag submits one command on release, not one per frame.** A hundred frames
+  would be a hundred commands, each stamped with the same instant and each rejected
+  after the first as a look-back. The engine is told once, at the price the finger
+  finished on. The ViewModel holds the grabbed line's identity across the gesture
+  because the chart, by design, does not know what an order is.
+- **A stop wins a tie against a target, and against list order.** Two lines can be
+  equidistant — a stop and a target bracketing a narrow range. Taking the first
+  within tolerance would make the drag depend on insertion order, which is arbitrary
+  from the trader's point of view, and the same touch could pick different lines on
+  different frames. Nearest wins; a stop breaks the tie, because it bounds the loss
+  and is the safer reading of an ambiguous touch.
+- **A preview bracket is never grabbable, and a non-draggable line is never hit.**
+  The `isPreview` and `isDraggable` flags the renderer already draws from are the
+  same flags the hit test respects, so a level the trader can see is a level they can
+  grab, and one drawn as a preview is not.
+- **Buy and Sell open a ticket rather than submitting.** A one-tap market order
+  turns a mis-tap into a live position; for a deliberate-practice app the extra tap
+  is worth a much smaller class of mistake. The plan's 10.10 "no accidental trades"
+  is enforced by refusing an incomplete ticket in the feature, before the engine.
+- **Markers index the drawn buffer, not the loaded minutes.** The renderer maps an
+  index to a pixel in the aggregated series. Resolving a trade's time against the
+  minutes would put every arrow on the wrong bar on any timeframe above M1.
+- **The panel and ticket are an overlay, not a column entry.** Opening one must not
+  resize the chart, or the price scale would change under the trader's finger
+  mid-gesture.
+
+### Bugs found by tests
+
+- **The tick republish dropped the overlays.** The light path in
+  `refreshFormingCandle` rebuilt the frame and wrote it to state without re-applying
+  the trading overlays, so every new minute erased the position lines until the next
+  command. Found while wiring the markers; fixed by re-applying the overlays and
+  re-reading the marks on each moving tick.
+- **The hit tester was first written in `core/trading` over `TradeOverlay`.** It
+  compiled only until the chart tried to call it with the drawn `OverlayGroup` list,
+  which is the type the renderer actually has. The compiler enforced the seam: the
+  tester was moved to `core/chart` and rewritten over the render types.
+
+### Verification
+
+- `:app:testDebugUnitTest`: `tests=1011 failures=0 errors=0 skipped=0` across 62
+  suites. Phase 10 adds 54 test methods (47 in new suites, 7 to
+  `ChartPriceScaleTest` and `TradingViewModelTest`); the pre-Phase-10 count on
+  this tree was not measured separately, and Phase 9's section records 899.
+- The Phase 10 suites: `OverlayLineHitTesterTest` (12), `OrderTicketParsingTest`
+  (8), `TradeOverlayMapperTest` (11), `LiveTradingSessionTest` (20),
+  `BracketMathTest` (13), `TradeOverlayTest` (15), `RiskLockTest` (14), 7 new cases
+  in `TradingViewModelTest` (17 total) driving the ticket through a real
+  `LiveTradingSession` over the production Room repository, and 7 new cases in
+  `ChartPriceScaleTest` (27 total) covering `priceAt` and `toleranceUnits`.
+- `:app:assembleDebug` and `:app:lintDebug` both succeed.
+- `tools/check_phase_reports.py` and `tools/check_price_scale.py` both pass.
+
+### Unverified requirements
+
+- **No gesture has been performed on a device.** There is no device and no emulator
+  (no `/dev/kvm`). The hit test, the price conversion and the drag state machine are
+  pure and tested, but that a finger on a real chart grabs the line it meant is
+  unconfirmed by me.
+- **The 24dp touch tolerance is a judgement, not a measurement.** It is argued from
+  the Material minimum touch target, not tuned against a user.
+- **Order-line drag and chart pan can both claim a touch-down.** The grab is tried
+  first and returns false when nothing is near, so an empty touch pans; but whether
+  that ordering *feels* right — whether the tolerance is wide enough to grab and
+  narrow enough to still pan near a line — is unverified without a device.
+- **No visual check of the overlays or markers.** That the lines, shading and
+  arrows are drawn where and in the colours intended is asserted only through the
+  mapper's output, not seen.
+- **The ticket's numeric keyboard and locale behaviour is untested on a device.**
+  The comma-decimal path is unit-tested; the on-screen keyboard is not.
+
+### Phase completion report
+
+```
+PHASE COMPLETION REPORT
+
+Phase: 10 — Interactive chart trading
+Status: COMPLETE
+
+Implemented:
+- Live session created at the composition root via TradingSessionSource
+- Market and pending orders from an order ticket; incomplete tickets refused
+- Order-line overlays via TradeOverlayMapper (the rule 3 seam)
+- Order-line dragging: hit test, pixel-to-price conversion, one command on release
+- Bracket preview (risk, reward, R:R) and risk-lock sizing
+- Close, cancel and move-to-breakeven from the positions panel
+- Entry and exit markers on closed trades
+- Account strip: balance, floating PnL, exposure counts
+- 54 new tests; 1011 total, 0 failures
+
+Files Created:
+- feature/trading/TradingPanelState.kt, TradeOverlayMapper.kt, TradingControls.kt,
+  OrderTicketSheet.kt, PositionsPanel.kt
+- core/chart/renderer/OverlayLineHitTester.kt
+- Tests: OverlayLineHitTesterTest.kt, TradeOverlayMapperTest.kt,
+  OrderTicketParsingTest.kt
+
+Files Modified:
+- feature/trading/TradingViewModel.kt, LiveTradingSession.kt
+- core/trading/TradingEngine.kt
+- core/chart/renderer/ChartPriceScale.kt, ChartRenderState.kt
+- ui/chart/CandlestickChart.kt
+- di/AppContainer.kt
+
+Build Result:
+- :app:compileDebugKotlin succeeds
+
+Tests Executed:
+- 1011
+
+Tests Passed:
+- 1011
+
+Tests Failed:
+- 0
+
+Known Issues:
+- No on-device verification of the drag gesture or the ticket keyboard
+- The 24dp touch tolerance is a reasoned default, not a tuned one
+- Drag-versus-pan arbitration is untested against a real finger
+
+Unverified Requirements:
+- That a touch grabs the line the trader aimed at, on a real chart
+- Visual placement and colour of overlays and markers
+- Locale-specific numeric keyboard behaviour
+
+Next Phase:
+- None. Phase 10 is the gate; Phase 11 is not started.
+```

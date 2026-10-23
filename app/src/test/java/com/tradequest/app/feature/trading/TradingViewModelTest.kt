@@ -10,6 +10,12 @@ import com.tradequest.app.core.database.market.Candle1mEntity
 import com.tradequest.app.core.database.market.MarketDatabase
 import com.tradequest.app.core.database.market.MarketDatasetEntity
 import com.tradequest.app.core.database.market.RoomMarketRepository
+import com.tradequest.app.core.replay.InMemoryReplayStore
+import com.tradequest.app.core.risk.RiskLockBps
+import com.tradequest.app.core.trading.ContractSpec
+import com.tradequest.app.core.trading.OrderSide
+import com.tradequest.app.core.trading.OrderType
+import com.tradequest.app.core.trading.TradingContext
 import com.tradequest.app.ui.theme.ThemeMode
 import com.tradequest.app.ui.theme.chartStyleFor
 import kotlinx.coroutines.Dispatchers
@@ -85,6 +91,19 @@ class TradingViewModelTest {
         override suspend fun currentSeason(): SeasonBinding? = season
         override fun currentSimUtcMs(): Long? = simUtcMs
         override fun simInstants(): Flow<Long> = instants.receiveAsFlow()
+
+        override suspend fun startingBalanceMicros(): Long = 10_000L * 1_000_000L
+
+        /**
+         * A live session, or null when the test has not supplied one.
+         *
+         * Phase 10's UI tests drive trading through the ViewModel, but the engine
+         * behaviour is covered against a real session in `LiveTradingSessionTest`.
+         * Here the factory only has to satisfy the port; a test that needs a session
+         * sets [liveSession].
+         */
+        var liveSession: LiveTradingSession? = null
+        override suspend fun createLiveSession(): LiveTradingSession? = liveSession
 
         /** True once [endSeason] has closed the clock, so the flow has completed. */
         val isClockClosed: Boolean get() = instants.isClosedForReceive
@@ -400,5 +419,170 @@ class TradingViewModelTest {
         val state = vm.state.value as TradingState.Ready
         assertEquals(30, state.renderState.buffer.size)
         assertTrue("the fake's clock flow should have completed", sessions.isClockClosed)
+    }
+
+    // ---------- Phase 10: the ticket, the session and the overlays ----------
+
+    /**
+     * A real session over the test's dataset, so the ticket is driven end to end.
+     *
+     * The market repository is the production Room one and the store is the in-memory
+     * one the other replay tests use, so the only thing faked about the trading path
+     * here is the clock — which is what [FakeSessions] exists for.
+     */
+    private fun liveSession(datasetId: String = "ds_a") = LiveTradingSession(
+        seasonId = "s1",
+        marketRepository = marketRepository,
+        datasetId = datasetId,
+        tradingContext = TradingContext(seasonId = "s1", contract = ContractSpec.XAUUSD),
+        startingBalanceMicros = 10_000L * 1_000_000L,
+        store = InMemoryReplayStore(),
+    )
+
+    @Test
+    fun `with a live season the panel reports the account and the trade controls`() = runTest(dispatcher) {
+        insertDataset(minutes = 600)
+        sessions.season = SeasonBinding("s1", "ds_a")
+        sessions.simUtcMs = t0 + 30 * minuteMs
+        sessions.liveSession = liveSession()
+
+        val vm = viewModel()
+        advanceUntilIdle()
+
+        val panel = vm.panel.value
+        assertTrue("a running season must make the screen live", panel.isLive)
+        assertEquals(10_000L * 1_000_000L, panel.account?.balanceMicros)
+        assertTrue(panel.positions.isEmpty())
+    }
+
+    @Test
+    fun `without a season the trade controls stay hidden`() = runTest(dispatcher) {
+        insertDataset(minutes = 600)
+        sessions.season = null
+        sessions.simUtcMs = null
+        sessions.liveSession = null
+
+        val vm = viewModel()
+        advanceUntilIdle()
+
+        assertTrue("a historical chart must not offer trading", !vm.panel.value.isLive)
+    }
+
+    @Test
+    fun `placing a market buy opens a position and draws its overlay`() = runTest(dispatcher) {
+        insertDataset(minutes = 600)
+        sessions.season = SeasonBinding("s1", "ds_a")
+        sessions.simUtcMs = t0 + 30 * minuteMs
+        sessions.liveSession = liveSession()
+
+        val vm = viewModel()
+        advanceUntilIdle()
+        oneMinuteState(vm)
+
+        vm.openTicket(OrderSide.BUY)
+        val ticket = vm.ticket.value
+        assertNotNull("Buy must open a ticket", ticket)
+        // A market ticket is seeded with the last price, so its preview can size.
+        assertNotNull("a market ticket is seeded with the current price", ticket!!.priceUnits)
+
+        vm.updateTicket { it.copy(volumeHundredths = 10, stopLossPips = 50, takeProfitPips = 100) }
+        vm.submitTicket()
+        advanceUntilIdle()
+
+        assertEquals(1, vm.panel.value.openPositionCount)
+        assertNull("a submitted ticket closes", vm.ticket.value)
+
+        val ready = vm.state.value as TradingState.Ready
+        assertEquals("the new position must be drawn", 1, ready.renderState.overlays.size)
+        val overlay = ready.renderState.overlays.single()
+        assertTrue("a buy is drawn as a buy", overlay.isBuy)
+        assertNotNull(overlay.entry)
+        assertNotNull("a 50-pip stop must be drawn", overlay.stop)
+        assertNotNull("a 100-pip target must be drawn", overlay.target)
+    }
+
+    @Test
+    fun `a pending order with no price is refused with a message rather than submitted`() = runTest(dispatcher) {
+        insertDataset(minutes = 600)
+        sessions.season = SeasonBinding("s1", "ds_a")
+        sessions.simUtcMs = t0 + 30 * minuteMs
+        sessions.liveSession = liveSession()
+
+        val vm = viewModel()
+        advanceUntilIdle()
+        oneMinuteState(vm)
+
+        vm.openTicket(OrderSide.BUY)
+        vm.updateTicket { it.copy(type = OrderType.LIMIT, priceUnits = null, volumeHundredths = 10) }
+        vm.submitTicket()
+        advanceUntilIdle()
+
+        assertTrue("an incomplete ticket must not reach the engine", vm.panel.value.pendingOrderCount == 0)
+        assertNotNull("the refusal must be shown", vm.panel.value.lastMessage)
+        assertNotNull("the ticket stays open so the trader can fix it", vm.ticket.value)
+    }
+
+    @Test
+    fun `closing a position removes its overlay`() = runTest(dispatcher) {
+        insertDataset(minutes = 600)
+        sessions.season = SeasonBinding("s1", "ds_a")
+        sessions.simUtcMs = t0 + 30 * minuteMs
+        sessions.liveSession = liveSession()
+
+        val vm = viewModel()
+        advanceUntilIdle()
+        oneMinuteState(vm)
+
+        vm.openTicket(OrderSide.BUY)
+        vm.updateTicket { it.copy(volumeHundredths = 10) }
+        vm.submitTicket()
+        advanceUntilIdle()
+        val positionId = vm.panel.value.positions.single().positionId
+
+        vm.closePosition(positionId)
+        advanceUntilIdle()
+
+        assertEquals(0, vm.panel.value.openPositionCount)
+        val ready = vm.state.value as TradingState.Ready
+        assertTrue("a closed position must leave no lines behind", ready.renderState.overlays.isEmpty())
+        assertEquals("the close is recorded for review", 1, vm.panel.value.closedTrades.size)
+    }
+
+    @Test
+    fun `the risk lock sizes a ticket from its stop`() = runTest(dispatcher) {
+        insertDataset(minutes = 600)
+        sessions.season = SeasonBinding("s1", "ds_a")
+        sessions.simUtcMs = t0 + 30 * minuteMs
+        sessions.liveSession = liveSession()
+
+        val vm = viewModel()
+        advanceUntilIdle()
+        oneMinuteState(vm)
+
+        vm.selectRiskLock(RiskLockBps.TWO)
+        vm.openTicket(OrderSide.BUY)
+        vm.updateTicket { it.copy(useRiskLock = true, stopLossPips = 100) }
+
+        val sized = vm.panel.value.riskLockLotUnits
+        assertNotNull("a stop and a balance must size the trade", sized)
+        assertTrue("a 2% lock on $10,000 must afford at least the minimum lot", sized!! > 0)
+        // The preview reports the bracket the sized trade would take.
+        assertNotNull(vm.panel.value.bracketPreview)
+    }
+
+    @Test
+    fun `grabbing empty space does not arm a line drag`() = runTest(dispatcher) {
+        insertDataset(minutes = 600)
+        sessions.season = SeasonBinding("s1", "ds_a")
+        sessions.simUtcMs = t0 + 30 * minuteMs
+        sessions.liveSession = liveSession()
+
+        val vm = viewModel()
+        advanceUntilIdle()
+        oneMinuteState(vm)
+
+        // Nothing is drawn, so nothing can be grabbed. A touch must therefore be a
+        // pan rather than a drag, which is what the false return tells the chart.
+        assertTrue(!vm.grabOrderLine(tapPriceUnits = 2_050_000, toleranceUnits = 5_000))
     }
 }

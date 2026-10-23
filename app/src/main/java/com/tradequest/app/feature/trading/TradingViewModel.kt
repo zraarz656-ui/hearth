@@ -7,14 +7,33 @@ import com.tradequest.app.core.chart.coordinates.PriceAxisRange
 import com.tradequest.app.core.chart.renderer.ChartFrameAssembler
 import com.tradequest.app.core.chart.renderer.ChartRenderState
 import com.tradequest.app.core.chart.renderer.ChartStyle
+import com.tradequest.app.core.chart.renderer.OverlayLineHit
+import com.tradequest.app.core.chart.renderer.OverlayLineHitTester
+import com.tradequest.app.core.chart.renderer.OverlayLineKind
 import com.tradequest.app.core.chart.timeframe.Timeframe
 import com.tradequest.app.core.chart.viewport.ChartTimeframeAnchor
 import com.tradequest.app.core.chart.viewport.ChartViewport
 import com.tradequest.app.core.market.DatasetSummary
 import com.tradequest.app.core.market.HistoricalCandle
 import com.tradequest.app.core.market.MarketRepository
+import com.tradequest.app.core.accounting.CommissionSchedule
+import com.tradequest.app.core.risk.RiskLock
+import com.tradequest.app.core.risk.RiskLockBps
 import com.tradequest.app.core.simulation.path.MarketPathBuilder
 import com.tradequest.app.core.simulation.path.MarketPathWindow
+import com.tradequest.app.core.trading.BracketMath
+import com.tradequest.app.core.trading.BracketPlan
+import com.tradequest.app.core.trading.CommandResult
+import com.tradequest.app.core.trading.ContractSpec
+import com.tradequest.app.core.trading.Modification
+import com.tradequest.app.core.trading.OrderSide
+import com.tradequest.app.core.trading.OrderType
+import com.tradequest.app.core.risk.PositionSizeResult
+import com.tradequest.app.core.trading.SpreadModel
+import com.tradequest.app.core.trading.TradeDirection
+import com.tradequest.app.core.trading.TradeOverlay
+import com.tradequest.app.core.trading.TradingCommand
+import com.tradequest.app.core.trading.TradingEvent
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -147,6 +166,26 @@ class TradingViewModel(
     /** The poll loop, held so a refresh cannot start a second one. */
     private var tickJob: Job? = null
 
+    /**
+     * The live trading session, when a season is running (Phase 10).
+     *
+     * Null on a historical chart, where there is no clock to trade against and the
+     * trade controls are hidden.
+     */
+    private var liveSession: LiveTradingSession? = null
+
+    private val _panel = MutableStateFlow(TradingPanelState())
+    /** The trading panel's state: account, positions, ticket and messages. */
+    val panel: StateFlow<TradingPanelState> = _panel.asStateFlow()
+
+    private val _ticket = MutableStateFlow<OrderTicket?>(null)
+    /** The open order ticket, or null when it is closed (Step 10.2). */
+    val ticket: StateFlow<OrderTicket?> = _ticket.asStateFlow()
+
+    private val _sheet = MutableStateFlow(TradingSheet.NONE)
+    /** Which trading sheet is showing over the chart. */
+    val sheet: StateFlow<TradingSheet> = _sheet.asStateFlow()
+
     init {
         viewModelScope.launch { load() }
     }
@@ -176,9 +215,67 @@ class TradingViewModel(
             dataset = summary
             rebuild(summary)
             startFollowingClock()
+            openLiveSession()
         } catch (error: Exception) {
             _state.value = TradingState.Failed(error.message ?: "Could not load the chart")
         }
+    }
+
+    /**
+     * Opens the live trading session, if a season is running (Step 10.1).
+     *
+     * # Why this is separate from [load]
+     *
+     * The chart is useful without a session — a trader can study a dataset as plain
+     * history — so a failure or absence here must not fail the screen. It only
+     * decides whether the trade controls appear.
+     */
+    private suspend fun openLiveSession() {
+        val session = try {
+            sessions.createLiveSession()
+        } catch (error: Exception) {
+            // A season that cannot be traded leaves the chart readable.
+            null
+        } ?: run {
+            _panel.value = _panel.value.copy(isLive = false)
+            return
+        }
+
+        val opened = try {
+            session.open()
+        } catch (error: Exception) {
+            null
+        }
+        if (opened == null) {
+            _panel.value = _panel.value.copy(isLive = false)
+            return
+        }
+        liveSession = session
+        _panel.value = _panel.value.copy(isLive = true, riskLock = _panel.value.riskLock)
+        refreshTradingState()
+    }
+
+    /**
+     * Re-reads the account, positions, orders and marks from the session.
+     *
+     * Called after any command and on every clock tick that moves the price, so the
+     * numbers on screen follow the fill and the mark rather than the last command.
+     */
+    private suspend fun refreshTradingState() {
+        val session = liveSession ?: return
+        val account = session.account()
+        val positions = session.openPositions()
+        // The mark is the bid, so the PnL shown is what a close would realise. The
+        // session exposes the executable bid per position for exactly this.
+        val marks = session.bidPrices()
+        _panel.value = _panel.value.copy(
+            isLive = true,
+            account = account,
+            positions = positions,
+            pendingOrders = session.pendingOrders(),
+            closedTrades = session.closedTrades(),
+            markPrices = marks,
+        )
     }
 
     /** Re-reads and re-aggregates the active dataset. */
@@ -265,7 +362,11 @@ class TradingViewModel(
         // invalidate Compose on every tick.
         if (rebuilt.formingCandle == current.renderState.formingCandle) return
         lastViewport = rebuilt.viewport
-        _state.value = TradingState.Ready(summary, timeframe, rebuilt)
+        // The marks follow the price, so the account and position PnL are re-read on
+        // every tick that moves the candle. Doing it only on a command would leave
+        // the floating PnL frozen at the last fill while the chart moved under it.
+        refreshTradingState()
+        _state.value = TradingState.Ready(summary, timeframe, rebuilt.withTradingOverlays())
     }
 
     /** Switches the charted timeframe, re-aggregating from the loaded minutes. */
@@ -370,9 +471,459 @@ class TradingViewModel(
         _state.value = TradingState.Ready(
             dataset = summary,
             timeframe = timeframe,
-            renderState = renderState,
+            renderState = renderState.withTradingOverlays(),
         )
     }
+
+    /**
+     * Attaches the trade overlays and markers to a frame (Steps 10.3, 10.8).
+     *
+     * # Why this is a `copy` after the assembler rather than an assembler argument
+     *
+     * `ChartFrameAssembler` lives in `core/chart` and must not know what a position
+     * is. The overlays are a feature-layer concept, so they are attached here, where
+     * the feature may depend on both the chart and the trading domain. The assembler
+     * stays a pure geometry function and its tests stay about geometry.
+     */
+    private fun ChartRenderState.withTradingOverlays(): ChartRenderState {
+        val session = liveSession ?: return this
+        val panelState = _panel.value
+        return copy(
+            overlays = TradeOverlayMapper.groups(
+                positions = panelState.positions,
+                pendingOrders = panelState.pendingOrders,
+                contract = session.contract,
+                previewBracket = previewBracketForTicket(session.contract),
+            ),
+            // The markers index into the buffer being drawn — the *aggregated*
+            // series — not the loaded minutes, because the renderer maps an index to
+            // a pixel in that buffer. Resolving against the minutes would put every
+            // arrow on the wrong bar on any timeframe above M1.
+            markers = TradeOverlayMapper.markers(panelState.closedTrades, buffer),
+        )
+    }
+
+    /**
+     * The sizer bracket the ticket is previewing, if any (Step 10.5).
+     *
+     * Built from the ticket's entry, stop and target so the chart shows the bracket
+     * the trader is about to submit, before they submit it. A market ticket has no
+     * entry price of its own, so it previews nothing.
+     */
+    private fun previewBracketForTicket(contract: ContractSpec): TradeOverlayMapper.PreviewBracket? {
+        val current = _ticket.value ?: return null
+        val entry = current.priceUnits ?: return null
+        return TradeOverlayMapper.PreviewBracket(
+            side = current.side,
+            entryPriceUnits = entry,
+            stopPriceUnits = current.stopLossPips?.let {
+                TradeOverlay.stopPriceFor(current.side, entry, it, contract)
+            },
+            targetPriceUnits = current.takeProfitPips?.let {
+                TradeOverlay.targetPriceFor(current.side, entry, it, contract)
+            },
+        )
+    }
+
+    // ================= Phase 10: trading commands and ticket =================
+
+    /**
+     * The instant a command should be stamped with (Step 10.1).
+     *
+     * The current simulated instant, never the candle's. A command stamped with a
+     * bar's time would be a look-back command the moment the clock has moved past
+     * it, which the engine refuses — correctly, because it would be filled against
+     * price movement that had already happened when the trader acted.
+     */
+    private fun commandInstant(): Long? = sessions.currentSimUtcMs()
+
+    /** Opens the order ticket for [side] (Step 10.1). */
+    fun openTicket(side: OrderSide) {
+        if (!_panel.value.isLive) return
+        val entry = currentPrice()
+        _ticket.value = OrderTicket(side = side, priceUnits = entry)
+        _sheet.value = TradingSheet.TICKET
+        recomputeBracketPreview()
+    }
+
+    /** Closes the order ticket without submitting. */
+    fun closeTicket() {
+        _ticket.value = null
+        if (_sheet.value == TradingSheet.TICKET) _sheet.value = TradingSheet.NONE
+    }
+
+    /** Opens or closes the positions panel. */
+    fun togglePositionsPanel() {
+        _sheet.value = if (_sheet.value == TradingSheet.POSITIONS) {
+            TradingSheet.NONE
+        } else {
+            TradingSheet.POSITIONS
+        }
+    }
+
+    fun dismissSheet() {
+        _sheet.value = TradingSheet.NONE
+        _ticket.value = null
+    }
+
+    /**
+     * Updates the ticket and recomputes the sizer preview (Steps 10.2, 10.5).
+     *
+     * A single entry point for every field change so the preview can never be stale
+     * relative to the fields it is derived from — the bug that appears when each
+     * field has its own setter and one forgets to refresh.
+     */
+    fun updateTicket(transform: (OrderTicket) -> OrderTicket) {
+        val current = _ticket.value ?: return
+        _ticket.value = transform(current)
+        recomputeBracketPreview()
+    }
+
+    /**
+     * Recomputes the sizer bracket and the risk-lock size for the current ticket.
+     *
+     * # What is shown
+     *
+     * The risk, reward and R:R of the bracket, and the lot size the risk lock
+     * implies for the stop. Together these are the answer to "if I take this trade
+     * as planned, what can I lose, what can I make, and how big should it be?" —
+     * which is the whole point of the sizer being on the ticket rather than a
+     * separate screen.
+     *
+     * A ticket with no stop has no risk to size against, so the preview is cleared
+     * rather than showing a zero.
+     */
+    private fun recomputeBracketPreview() {
+        val current = _ticket.value
+        val session = liveSession
+        if (current == null || session == null) {
+            _panel.value = _panel.value.copy(bracketPreview = null, riskLockLotUnits = null)
+            return
+        }
+        val entry = current.priceUnits ?: return
+        val stopPips = current.stopLossPips
+        val targetPips = current.takeProfitPips
+        val contract = session.contract
+
+        val plan = BracketPlan(
+            side = current.side,
+            entryPriceUnits = entry,
+            stopPriceUnits = stopPips?.let { TradeOverlay.stopPriceFor(current.side, entry, it, contract) },
+            targetPriceUnits = targetPips?.let {
+                TradeOverlay.targetPriceFor(current.side, entry, it, contract)
+            },
+        )
+        val lotUnits = if (current.useRiskLock) {
+            riskLockSizeMicros(current, stopPips, entry, contract) ?: current.volumeHundredths
+        } else {
+            current.volumeHundredths
+        }
+        val economics = BracketMath.economics(plan, lotUnits, contract)
+
+        _panel.value = _panel.value.copy(
+            bracketPreview = economics,
+            riskLockLotUnits = if (current.useRiskLock) lotUnits else null,
+        )
+    }
+
+    /**
+     * The lot size the risk lock implies for [stopPips], or null when it cannot size.
+     *
+     * Uses the account's balance as equity and the normal spread, which is what the
+     * trader will actually pay outside a news window. A size that cannot be derived
+     * — no stop, or a budget below the minimum lot — returns null and the ticket
+     * keeps the typed size, so a drag never silently resizes a trade to zero.
+     */
+    private fun riskLockSizeMicros(
+        ticket: OrderTicket,
+        stopPips: Int?,
+        entryPriceUnits: Int,
+        contract: ContractSpec,
+    ): Int? {
+        val session = liveSession ?: return null
+        val pips = stopPips?.takeIf { it > 0 } ?: return null
+        val equity = _panel.value.account?.balanceMicros ?: return null
+        val result = RiskLock.size(
+            equityMicros = equity,
+            lock = _panel.value.riskLock,
+            stopDistancePips = pips,
+            entryPriceUnits = entryPriceUnits,
+            spreadUnits = SpreadModel.NORMAL_UNITS,
+            slippageAllowanceUnits = 0,
+            contract = contract,
+            commission = CommissionSchedule.STANDARD,
+            availableMarginMicros = null,
+        )
+        return (result as? PositionSizeResult.Sized)?.lotUnits
+    }
+
+    /** Selects the risk lock used for sizing (Step 10.6). */
+    fun selectRiskLock(lock: RiskLockBps) {
+        _panel.value = _panel.value.copy(riskLock = lock)
+        recomputeBracketPreview()
+    }
+
+    /**
+     * The last traded price, used to seed a market ticket's entry.
+     *
+     * The forming candle's close when one exists, otherwise the newest revealed
+     * candle's. Returns null before any data, in which case the ticket opens with
+     * no entry and previews nothing.
+     */
+    private fun currentPrice(): Int? {
+        val ready = _state.value as? TradingState.Ready ?: return null
+        // The buffer stores prices as Float for drawing geometry; the engine trades
+        // in Int price units. The conversion is exact for any price under 2^24 units
+        // ($16,777), which is well above gold, and `CandleBuffer` refuses a candle it
+        // cannot represent exactly.
+        return ready.renderState.formingCandle?.closeUnits
+            ?: ready.renderState.buffer
+                .takeIf { !it.isEmpty }
+                ?.closes
+                ?.get(ready.renderState.buffer.size - 1)
+                ?.toInt()
+    }
+
+    /**
+     * Submits the open ticket (Steps 10.1, 10.2).
+     *
+     * Refuses locally when the ticket is incomplete — a pending order with no price,
+     * or any order with no size — so the trader sees why rather than a command the
+     * engine rejects with a less specific reason.
+     */
+    fun submitTicket() {
+        val current = _ticket.value ?: return
+        val session = liveSession ?: return
+        val at = commandInstant() ?: return
+
+        val volume = if (current.useRiskLock) {
+            _panel.value.riskLockLotUnits ?: current.volumeHundredths
+        } else {
+            current.volumeHundredths
+        }
+        if (volume <= 0) {
+            _panel.value = _panel.value.copy(lastMessage = "Enter a lot size")
+            return
+        }
+        if (current.type != OrderType.MARKET && current.priceUnits == null) {
+            _panel.value = _panel.value.copy(lastMessage = "Enter a price for a ${current.type} order")
+            return
+        }
+
+        viewModelScope.launch {
+            val result = session.submit(
+                TradingCommand.PlaceOrder(
+                    atSimUtcMs = at,
+                    orderId = nextOrderId(),
+                    type = current.type,
+                    side = current.side,
+                    volumeHundredths = volume,
+                    priceUnits = if (current.type == OrderType.MARKET) null else current.priceUnits,
+                    stopLossPips = current.stopLossPips,
+                    takeProfitPips = current.takeProfitPips,
+                ),
+            )
+            applyResult(result) { closeTicket() }
+        }
+    }
+
+    /** Closes a position in full, or [volumeHundredths] of it (Step 10.7). */
+    fun closePosition(positionId: String, volumeHundredths: Int? = null) {
+        val session = liveSession ?: return
+        val at = commandInstant() ?: return
+        viewModelScope.launch {
+            applyResult(session.closePosition(positionId, at, volumeHundredths))
+        }
+    }
+
+    /** Cancels a pending order (Step 10.7). */
+    fun cancelOrder(orderId: String) {
+        val session = liveSession ?: return
+        val at = commandInstant() ?: return
+        viewModelScope.launch {
+            applyResult(session.cancelOrder(orderId, at))
+        }
+    }
+
+    /** Arms breakeven on a position (Step 10.7). */
+    fun moveToBreakeven(positionId: String) {
+        val session = liveSession ?: return
+        val at = commandInstant() ?: return
+        viewModelScope.launch {
+            applyResult(session.armBreakeven(positionId, at))
+        }
+    }
+
+    /**
+     * Moves a position's stop to a dragged price (Step 10.4).
+     *
+     * The dragged price is turned into the pip distance the engine stores. A stop
+     * dragged to the wrong side of entry yields a non-positive distance, which the
+     * engine rejects; the rejection is surfaced rather than clamped, because
+     * silently snapping the stop to one pip would hide the fact that the trader
+     * dragged it through their entry.
+     */
+    fun dragPositionStop(positionId: String, priceUnits: Int) {
+        val session = liveSession ?: return
+        val position = _panel.value.positions.firstOrNull { it.positionId == positionId } ?: return
+        val at = commandInstant() ?: return
+        val pips = TradeOverlay.pipDistanceFor(
+            side = position.side,
+            entryPriceUnits = position.openPriceUnits,
+            levelPriceUnits = priceUnits,
+            contract = session.contract,
+            direction = TradeDirection.ADVERSE,
+        )
+        viewModelScope.launch {
+            applyResult(
+                session.modifyPosition(
+                    positionId = positionId,
+                    atSimUtcMs = at,
+                    stopLossPips = Modification.Set(pips),
+                ),
+            )
+        }
+    }
+
+    /** Moves a position's target to a dragged price (Step 10.4). */
+    fun dragPositionTarget(positionId: String, priceUnits: Int) {
+        val session = liveSession ?: return
+        val position = _panel.value.positions.firstOrNull { it.positionId == positionId } ?: return
+        val at = commandInstant() ?: return
+        val pips = TradeOverlay.pipDistanceFor(
+            side = position.side,
+            entryPriceUnits = position.openPriceUnits,
+            levelPriceUnits = priceUnits,
+            contract = session.contract,
+            direction = TradeDirection.FAVOURABLE,
+        )
+        viewModelScope.launch {
+            applyResult(
+                session.modifyPosition(
+                    positionId = positionId,
+                    atSimUtcMs = at,
+                    takeProfitPips = Modification.Set(pips),
+                ),
+            )
+        }
+    }
+
+    /** Moves a pending order's entry to a dragged price (Step 10.4). */
+    fun dragOrderEntry(orderId: String, priceUnits: Int) {
+        val session = liveSession ?: return
+        val at = commandInstant() ?: return
+        viewModelScope.launch {
+            applyResult(session.modifyOrder(orderId, at, priceUnits = Modification.Set(priceUnits)))
+        }
+    }
+
+    // ------------------------------------------------ chart line drag (Step 10.4)
+
+    /**
+     * The line the chart has grabbed, or null when no drag is under way.
+     *
+     * Held across the drag because the chart reports a stream of prices and only
+     * the grab knows *which* line they belong to. The chart deliberately does not
+     * name the line — it must not know what an order is — so the identity is kept
+     * here, in the feature, between the grab and the release.
+     */
+    private var grabbedLine: OverlayLineHit? = null
+
+    /** The latest price a drag has reported, applied on release. */
+    private var grabbedPriceUnits: Int? = null
+
+    /**
+     * Called when a touch lands on the chart, to decide whether it grabbed a line.
+     *
+     * Returns true when a draggable line was within [toleranceUnits] of
+     * [tapPriceUnits], which is what makes the chart treat the touch as an
+     * order-line drag rather than a pan. The overlays searched are the ones currently
+     * drawn, so a line the trader can see is a line they can grab.
+     */
+    fun grabOrderLine(tapPriceUnits: Int, toleranceUnits: Int): Boolean {
+        val ready = _state.value as? TradingState.Ready ?: return false
+        val hit = OverlayLineHitTester.hit(
+            overlays = ready.renderState.overlays,
+            tapPriceUnits = tapPriceUnits,
+            toleranceUnits = toleranceUnits,
+        )
+        grabbedLine = hit
+        grabbedPriceUnits = hit?.priceUnits
+        return hit != null
+    }
+
+    /** Records the price under a dragging finger; the move is submitted on release. */
+    fun dragGrabbedLine(priceUnits: Int) {
+        if (grabbedLine == null) return
+        grabbedPriceUnits = priceUnits
+    }
+
+    /**
+     * Submits the move for the grabbed line (Step 10.4).
+     *
+     * One command per gesture rather than one per frame: a drag of a hundred frames
+     * would otherwise be a hundred commands, each stamped with the same instant and
+     * each rejected after the first as a look-back. The engine is told once, at the
+     * price the finger finished on.
+     */
+    fun releaseGrabbedLine() {
+        val hit = grabbedLine
+        val price = grabbedPriceUnits
+        grabbedLine = null
+        grabbedPriceUnits = null
+        if (hit == null || price == null) return
+
+        when (hit.kind) {
+            OverlayLineKind.STOP -> dragPositionStop(hit.overlayId, price)
+            OverlayLineKind.TARGET -> dragPositionTarget(hit.overlayId, price)
+            OverlayLineKind.ENTRY -> dragOrderEntry(hit.overlayId, price)
+        }
+    }
+
+    /**
+     * Applies a command's result: refresh the panel, and report a refusal.
+     *
+     * A rejection is shown rather than swallowed. A chart gesture that silently did
+     * nothing would read as the app being broken, when in fact the engine refused a
+     * command for a reason the trader can act on.
+     */
+    private suspend fun applyResult(
+        result: CommandResult,
+        onAccepted: (() -> Unit)? = null,
+    ) {
+        when (result) {
+            is CommandResult.Accepted -> {
+                onAccepted?.invoke()
+                refreshTradingState()
+                // The frame must show the new position's lines without waiting for
+                // the next tick, so the overlays are rebuilt now.
+                republishOverlays()
+                _panel.value = _panel.value.copy(lastMessage = null)
+            }
+
+            is CommandResult.Rejected -> {
+                _panel.value = _panel.value.copy(
+                    lastMessage = "Refused: ${result.reason}",
+                )
+            }
+        }
+    }
+
+    /**
+     * Rebuilds the current frame's overlays without re-aggregating.
+     *
+     * A fill changes the overlay set but not the candles, so the buffer is reused
+     * and only the overlays are recomputed — the same reasoning as the clock tick.
+     */
+    private fun republishOverlays() {
+        val ready = _state.value as? TradingState.Ready ?: return
+        _state.value = ready.copy(renderState = ready.renderState.withTradingOverlays())
+    }
+
+    /** A per-session-unique order id, so two orders cannot collide. */
+    private fun nextOrderId(): String = "ui-${orderIdCounter++}"
+
+    private var orderIdCounter: Int = 1
 
     /**
      * A rough bar count for the opening viewport, before the buffer is built.

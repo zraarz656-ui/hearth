@@ -19,6 +19,7 @@ import com.tradequest.app.core.simulation.clock.SimulationClock
 import com.tradequest.app.core.simulation.clock.SystemMonotonicClock
 import com.tradequest.app.core.simulation.clock.SystemWallClock
 import com.tradequest.app.core.trading.TradingContext
+import com.tradequest.app.feature.trading.LiveTradingSession
 import com.tradequest.app.feature.trading.SeasonBinding
 import com.tradequest.app.feature.trading.TradingSessionSource
 import com.tradequest.app.platform.AndroidReplayNotifier
@@ -134,6 +135,35 @@ class AppContainer(
                 // instant for this chart.
                 if (!simulationClock.isAttached) return null
                 return simulationClock.currentSimUtcMs()
+            }
+
+            override suspend fun startingBalanceMicros(): Long =
+                playerRepository.activeSeason()?.startingBalanceMicros
+                    ?: playerRepository.startingBalanceMicros
+
+            override suspend fun createLiveSession(): LiveTradingSession? {
+                val season = playerRepository.activeSeason() ?: return null
+                val bounds = marketRepository.timeBounds(season.datasetId) ?: return null
+                val news = marketRepository.newsInRange(
+                    datasetId = season.datasetId,
+                    fromUtcMs = bounds.first,
+                    toUtcMs = bounds.second + ONE_MINUTE_MS,
+                )
+                // The same context shape the replay path builds, so a live trade and
+                // a replayed one are priced by the same spread and rule set.
+                val context = TradingContext(
+                    seasonId = season.seasonId,
+                    newsReleaseTimesUtcMs = news.map { it.publishedAtUtcMs },
+                    riskPolicy = PropFirmRiskPolicy(),
+                )
+                return LiveTradingSession(
+                    seasonId = season.seasonId,
+                    marketRepository = marketRepository,
+                    datasetId = season.datasetId,
+                    tradingContext = context,
+                    startingBalanceMicros = season.startingBalanceMicros,
+                    store = replayStore,
+                )
             }
 
             override fun simInstants(): Flow<Long> = flow {

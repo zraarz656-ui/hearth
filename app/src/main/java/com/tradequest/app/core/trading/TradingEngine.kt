@@ -464,6 +464,16 @@ class TradingEngine(
         )
     }
 
+    /**
+     * Exit-side mark for every open position at [atSimUtcMs], by position id.
+     *
+     * Public so the Trading screen can show each position's mark, and the PnL it
+     * implies, without re-deriving the marking rule. A second copy of "bid, plus
+     * spread, on the exit side" would eventually disagree with the one used to
+     * settle a close, and the screen would show a profit the close did not realise.
+     */
+    fun markPricesAt(atSimUtcMs: Long): Map<String, Int> = marksAt(atSimUtcMs)
+
     /** Exit-side mark for every open position at [atSimUtcMs], by position id. */
     private fun marksAt(atSimUtcMs: Long): Map<String, Int> {
         val marks = mutableMapOf<String, Int>()

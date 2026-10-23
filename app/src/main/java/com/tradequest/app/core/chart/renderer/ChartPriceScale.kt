@@ -123,4 +123,49 @@ object ChartPriceScale {
      * call site: restoring auto-scale is an action, not the absence of a value.
      */
     fun restored(range: PriceAxisRange): PriceAxisRange = range
+
+    /**
+     * The price at [y] pixels down a plot [plotHeightPx] tall showing [range].
+     *
+     * The inverse of the price-to-pixel transform the renderer draws with: price
+     * increases upward, so the top of the plot is [PriceAxisRange.maxUnits]. Used
+     * by the order-line drag so the level under the finger is the level drawn
+     * under it (Step 10.4).
+     *
+     * A non-positive height returns the range's midpoint, which is the neutral
+     * answer before layout: neither end of the window is implied.
+     */
+    fun priceAt(y: Float, plotHeightPx: Float, range: PriceAxisRange): Float {
+        if (plotHeightPx <= 0f || !y.isFinite()) return (range.minUnits + range.maxUnits) / 2f
+        return range.maxUnits - (y / plotHeightPx) * range.spanUnits
+    }
+
+    /**
+     * A finger's width expressed in price units for [range] over [plotHeightPx].
+     *
+     * The order-line hit test works in prices, because `core/trading` must not know
+     * about a screen; only the chart knows how many units a finger covers, so the
+     * conversion happens here. [TOUCH_TOLERANCE_DP] is a comfortable target — the
+     * Material minimum touch target is 48dp, and a line should be grabbable within
+     * about half that either side — rather than the 8dp a touch-slop check would use,
+     * which is too fine for a level the trader is aiming at.
+     *
+     * A non-positive height or span returns zero, so a touch before layout hits
+     * nothing rather than everything.
+     */
+    fun toleranceUnits(plotHeightPx: Float, range: PriceAxisRange): Float {
+        if (plotHeightPx <= 0f) return 0f
+        val unitsPerPx = range.spanUnits / plotHeightPx
+        if (!unitsPerPx.isFinite() || unitsPerPx <= 0f) return 0f
+        return unitsPerPx * TOUCH_TOLERANCE_DP
+    }
+
+    /**
+     * How close, in density-independent pixels, a touch must be to grab an order
+     * line.
+     *
+     * Half of the 48dp minimum touch target, so a line is grabbable within roughly
+     * a finger's radius either side.
+     */
+    const val TOUCH_TOLERANCE_DP: Float = 24f
 }

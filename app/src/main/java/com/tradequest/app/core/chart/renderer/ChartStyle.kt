@@ -60,4 +60,49 @@ data class ChartStyle(
     val bodyWidthFraction: Float,
     /** Session bands are drawn at this alpha so candles stay readable over them. */
     val sessionBandAlpha: Float,
+
+    // ---------- Phase 10: trade overlays (Steps 10.3, 10.5, 10.8) ----------
+
+    /**
+     * Colour of a position's or order's entry line.
+     *
+     * Deliberately not the bullish or bearish colour: the entry is a fact about the
+     * trade, not a direction, and colouring it by side would make it indistinguishable
+     * from the stop and target lines that are also coloured by side.
+     */
+    val entryLine: Color = Color(0xFF2196F3),
+
+    /** Colour of a stop-loss line and its risk zone. */
+    val stopLine: Color = Color(0xFFE53935),
+
+    /** Colour of a take-profit line and its reward zone. */
+    val targetLine: Color = Color(0xFF43A047),
+
+    /**
+     * Alpha of the shaded risk and reward zones between the bracket lines.
+     *
+     * Low enough that candles read through it: the zone is context, and a solid
+     * fill would hide the price action the trader is using to place the bracket.
+     */
+    val zoneAlpha: Float = 0.10f,
+
+    /**
+     * Colour of an entry marker arrow (Step 10.8).
+     *
+     * Separate from [entryLine] because a marker is a historical annotation on a
+     * specific bar, while the entry line spans the plot.
+     */
+    val markerEntry: Color = Color(0xFF2196F3),
+
+    /** Colour of an exit marker arrow (Step 10.8). */
+    val markerExit: Color = Color(0xFF9E9E9E),
+
+    /**
+     * Half-height of a draggable line's grab handle, in pixels.
+     *
+     * The hit region for a drag is this tall on each side of the line. A hairline
+     * is far too thin for a finger, so the handle is a visible target rather than
+     * the line itself being touchable.
+     */
+    val handleRadiusPx: Float = 14f,
 )

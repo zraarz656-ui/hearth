@@ -82,6 +82,10 @@ class ChartRenderer(
             drawGrid(state, transformer, plotWidthPx, plotHeightPx, bufferWindow)
         }
         drawCandles(state, transformer, bufferWindow, visibleSlots)
+        // Overlays sit above the candles: a stop line hidden behind a wick would be
+        // invisible exactly when price is near it, which is when it matters.
+        drawTradeOverlays(state, transformer, plotWidthPx)
+        drawTradeMarkers(state, transformer, bufferWindow)
         drawPriceAxis(state, transformer, plotWidthPx, priceAxisWidthPx)
         drawTimeAxis(state, transformer, plotWidthPx, timeAxisHeightPx, bufferWindow)
         drawCurrentPriceLine(state, transformer, plotWidthPx, priceAxisWidthPx)
@@ -653,6 +657,191 @@ class ChartRenderer(
         type = androidx.compose.ui.unit.TextUnitType.Sp,
     )
 
+    // ---------- Steps 10.3, 10.5, 10.8: trade overlays and markers ----------
+
+    /**
+     * Draws every trade bracket: its shaded zones, its lines, and its handles.
+     *
+     * # Order within a group
+     *
+     * Zones first, then lines, then handles. A zone is a fill behind the lines that
+     * bound it, so drawing it last would tint the lines themselves; a handle is a
+     * target drawn on the line, so it must come after the line or the line would
+     * cover it.
+     *
+     * # Why the risk zone needs both a stop and an entry
+     *
+     * The zone spans entry to stop. With no stop there is no zone to shade — an
+     * entry alone is a line, not an area — so a group missing either edge is drawn
+     * as lines only. The same applies to the reward zone.
+     */
+    private fun DrawScope.drawTradeOverlays(
+        state: ChartRenderState,
+        transformer: ChartCoordinateTransformer,
+        plotWidthPx: Float,
+    ) {
+        if (state.overlays.isEmpty()) return
+        val style = state.style
+        val plotHeight = transformer.plotHeightPx
+
+        for (group in state.overlays) {
+            val entry = group.entry ?: continue
+
+            // Shade risk and reward before the lines so the fills sit behind them.
+            group.stop?.let { stop ->
+                shadeZone(
+                    transformer = transformer,
+                    fromUnits = entry.priceUnits,
+                    toUnits = stop.priceUnits,
+                    plotWidthPx = plotWidthPx,
+                    plotHeightPx = plotHeight,
+                    color = style.stopLine,
+                    alpha = style.zoneAlpha,
+                )
+            }
+            group.target?.let { target ->
+                shadeZone(
+                    transformer = transformer,
+                    fromUnits = entry.priceUnits,
+                    toUnits = target.priceUnits,
+                    plotWidthPx = plotWidthPx,
+                    plotHeightPx = plotHeight,
+                    color = style.targetLine,
+                    alpha = style.zoneAlpha,
+                )
+            }
+
+            for (line in group.lines) {
+                val price = line.priceUnits.toFloat()
+                if (!state.priceRange.contains(price)) continue
+                val y = transformer.yOfPrice(price)
+                if (y < 0f || y > plotHeight) continue
+
+                val color = when (line.kind) {
+                    OverlayLineKind.ENTRY -> style.entryLine
+                    OverlayLineKind.STOP -> style.stopLine
+                    OverlayLineKind.TARGET -> style.targetLine
+                }
+                drawLine(
+                    color = color,
+                    start = Offset(0f, y),
+                    end = Offset(plotWidthPx, y),
+                    strokeWidth = TRADE_LINE_WIDTH_PX,
+                )
+
+                // Only a line a drag can move gets a handle, so the affordance and
+                // the behaviour agree.
+                if (line.isDraggable) {
+                    drawHandle(
+                        y = y,
+                        plotWidthPx = plotWidthPx,
+                        radiusPx = style.handleRadiusPx,
+                        color = color,
+                    )
+                }
+            }
+        }
+    }
+
+    /** Fills the vertical band between two price levels. */
+    private fun DrawScope.shadeZone(
+        transformer: ChartCoordinateTransformer,
+        fromUnits: Int,
+        toUnits: Int,
+        plotWidthPx: Float,
+        plotHeightPx: Float,
+        color: Color,
+        alpha: Float,
+    ) {
+        val y1 = transformer.yOfPrice(fromUnits.toFloat())
+        val y2 = transformer.yOfPrice(toUnits.toFloat())
+        val top = minOf(y1, y2).coerceIn(0f, plotHeightPx)
+        val bottom = maxOf(y1, y2).coerceIn(0f, plotHeightPx)
+        val height = bottom - top
+        if (height <= 0f) return
+        drawRect(
+            color = color.copy(alpha = alpha),
+            topLeft = Offset(0f, top),
+            size = Size(plotWidthPx, height),
+        )
+    }
+
+    /**
+     * The grab target on a draggable line.
+     *
+     * Drawn as a filled circle at the left edge, where a thumb naturally rests and
+     * where it does not cover the most recent candles on the right.
+     */
+    private fun DrawScope.drawHandle(
+        y: Float,
+        plotWidthPx: Float,
+        radiusPx: Float,
+        color: Color,
+    ) {
+        if (radiusPx <= 0f) return
+        drawCircle(
+            color = color,
+            radius = radiusPx * HANDLE_FILL_FRACTION,
+            center = Offset(radiusPx, y),
+        )
+    }
+
+    /**
+     * Draws entry and exit arrows (Step 10.8).
+     *
+     * An entry arrow points the way the trade expects price to go — up for a buy,
+     * down for a sell — and an exit arrow points the opposite way, so the pair reads
+     * as "in here, out there" without a legend.
+     *
+     * Only markers whose bar is in the drawn window are considered, and a marker
+     * outside the price window is skipped rather than clamped to the edge, because a
+     * clamped arrow would point at a price the trade never touched.
+     */
+    private fun DrawScope.drawTradeMarkers(
+        state: ChartRenderState,
+        transformer: ChartCoordinateTransformer,
+        bufferWindow: IntRange,
+    ) {
+        if (state.markers.isEmpty()) return
+        val style = state.style
+
+        for (marker in state.markers) {
+            if (bufferWindow.isEmpty() || marker.index !in bufferWindow) continue
+            val price = marker.priceUnits.toFloat()
+            if (!state.priceRange.contains(price)) continue
+
+            val x = transformer.xOfIndex(marker.index.toFloat())
+            if (x < 0f || x > transformer.plotWidthPx) continue
+            val y = transformer.yOfPrice(price)
+
+            // Entry points into the trade, exit points out of it.
+            val pointsUp = if (marker.isEntry) marker.isBuy else !marker.isBuy
+            val colour = if (marker.isEntry) style.markerEntry else style.markerExit
+            drawMarkerArrow(x = x, y = y, pointsUp = pointsUp, color = colour)
+        }
+    }
+
+    /** A small triangle at ([x], [y]) pointing up or down. */
+    private fun DrawScope.drawMarkerArrow(
+        x: Float,
+        y: Float,
+        pointsUp: Boolean,
+        color: Color,
+    ) {
+        val size = MARKER_SIZE_PX
+        // Offset the triangle so its point touches the price and its body sits
+        // clear of the bar, rather than the bar sitting on the arrow's centre.
+        val tipY = if (pointsUp) y - MARKER_GAP_PX else y + MARKER_GAP_PX
+        val baseY = if (pointsUp) tipY + size else tipY - size
+        val path = androidx.compose.ui.graphics.Path().apply {
+            moveTo(x, tipY)
+            lineTo(x - size / 2f, baseY)
+            lineTo(x + size / 2f, baseY)
+            close()
+        }
+        drawPath(path = path, color = color)
+    }
+
     private companion object {
         const val MIN_BODY_WIDTH_PX: Float = 1f
         const val WEEKEND_SEPARATOR_WIDTH_PX: Float = 1.5f
@@ -660,5 +849,13 @@ class ChartRenderer(
         const val CROSSHAIR_WIDTH_PX: Float = 1f
         const val TIME_TICK_TARGET: Int = 6
         const val PIXELS_PER_PRICE_LABEL: Float = 48f
+        /** Stroke width of a trade bracket line, in pixels. */
+        const val TRADE_LINE_WIDTH_PX: Float = 1.5f
+        /** The filled part of a handle, as a fraction of its hit radius. */
+        const val HANDLE_FILL_FRACTION: Float = 0.45f
+        /** Edge length of a trade marker triangle, in pixels. */
+        const val MARKER_SIZE_PX: Float = 12f
+        /** Gap between the marker's point and the price level, in pixels. */
+        const val MARKER_GAP_PX: Float = 3f
     }
 }

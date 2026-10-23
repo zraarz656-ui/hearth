@@ -197,4 +197,65 @@ class ChartPriceScaleTest {
         // touch would scale instead of pan.
         assertFalse(ChartPriceScale.isOnPriceAxis(10f, plotWidthPx = 0f))
     }
+
+    // ---------- Steps 10.4: pixel to price, and touch tolerance ----------
+
+    @Test
+    fun `the top of the plot is the top of the window`() {
+        assertEquals(2_052_000f, ChartPriceScale.priceAt(0f, plotHeightPx, range), 0.5f)
+    }
+
+    @Test
+    fun `the bottom of the plot is the bottom of the window`() {
+        assertEquals(2_048_000f, ChartPriceScale.priceAt(plotHeightPx, plotHeightPx, range), 0.5f)
+    }
+
+    @Test
+    fun `the middle of the plot is the middle of the window`() {
+        assertEquals(2_050_000f, ChartPriceScale.priceAt(plotHeightPx / 2f, plotHeightPx, range), 0.5f)
+    }
+
+    @Test
+    fun `a price maps back to the pixel it came from`() {
+        // The round trip is what makes a dragged line follow the finger: the price
+        // under the finger is the price the line is set to, and it draws under it.
+        val y = 317f
+        val price = ChartPriceScale.priceAt(y, plotHeightPx, range)
+        val span = range.spanUnits
+        val backY = (range.maxUnits - price) / span * plotHeightPx
+        assertEquals(y, backY, 1e-2f)
+    }
+
+    @Test
+    fun `an unmeasured plot returns the window midpoint`() {
+        // Neutral before layout, rather than implying one end of the window.
+        assertEquals(2_050_000f, ChartPriceScale.priceAt(100f, plotHeightPx = 0f, range = range), 0.5f)
+    }
+
+    @Test
+    fun `tolerance scales with the window, not the screen`() {
+        // A wide window means each pixel covers more price, so a finger covers more
+        // price too. This is the whole reason the conversion is here.
+        val narrow = PriceAxisRange(minUnits = 2_049_000f, maxUnits = 2_051_000f)
+        val wide = PriceAxisRange(minUnits = 2_000_000f, maxUnits = 2_100_000f)
+        val narrowTol = ChartPriceScale.toleranceUnits(plotHeightPx, narrow)
+        val wideTol = ChartPriceScale.toleranceUnits(plotHeightPx, wide)
+        assertTrue("a wider window must tolerate more price units", wideTol > narrowTol)
+    }
+
+    @Test
+    fun `tolerance covers the configured finger width`() {
+        val unitsPerPx = range.spanUnits / plotHeightPx
+        assertEquals(
+            unitsPerPx * ChartPriceScale.TOUCH_TOLERANCE_DP,
+            ChartPriceScale.toleranceUnits(plotHeightPx, range),
+            1e-3f,
+        )
+    }
+
+    @Test
+    fun `an unmeasured plot has no tolerance`() {
+        // Zero, so a touch before layout hits nothing rather than everything.
+        assertEquals(0f, ChartPriceScale.toleranceUnits(plotHeightPx = 0f, range = range), 0f)
+    }
 }

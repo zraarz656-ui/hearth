@@ -1,0 +1,61 @@
+#!/bin/sh
+# Pre-commit: refuse a commit that would leave the phase documentation broken.
+#
+# Phases 6, 7, 8 and 9 each shipped with code and a commit but with no
+# completion report, and nothing noticed. This hook is the part of the fix that
+# runs before the mistake is recorded, rather than after.
+#
+# Install once per clone:
+#
+#     git config core.hooksPath .githooks
+#
+# It is deliberately a tracked file in .githooks/ rather than an edit to
+# .git/hooks/pre-commit: .git/ is not cloned, so a hook kept there would protect
+# exactly one machine.
+#
+# The check reads the *staged* blob, not the working tree. A file staged in part
+# differs from what is on disk, and validating the working tree would pass a
+# commit whose staged content is still broken.
+
+set -e
+
+# Hooks normally run from the working-tree root, but a `git -C` invocation or a
+# future change to git's behaviour should not silently disable the check.
+cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+
+PROGRESS="docs/development-progress.md"
+CHECK="tools/check_phase_reports.py"
+
+if [ ! -f "$CHECK" ]; then
+    echo "pre-commit: $CHECK is missing; skipping phase report check" >&2
+    exit 0
+fi
+
+# Only run when the progress document is part of this commit.
+if ! git diff --cached --name-only | grep -qx "$PROGRESS"; then
+    exit 0
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "pre-commit: python3 not found; skipping phase report check" >&2
+    exit 0
+fi
+
+STAGED_DIR=$(mktemp -d)
+trap 'rm -rf "$STAGED_DIR"' EXIT
+# Keep the real basename so the check's failure messages name the document a
+# reader recognises, not a temp path.
+if ! git show ":$PROGRESS" > "$STAGED_DIR/$(basename "$PROGRESS")" 2>/dev/null; then
+    # No such blob in the index: the very first commit, or an odd index state.
+    # Nothing to validate against, so do not block.
+    echo "pre-commit: could not read the staged $PROGRESS; skipping" >&2
+    exit 0
+fi
+
+if ! python3 "$CHECK" "$STAGED_DIR/$(basename "$PROGRESS")"; then
+    echo "" >&2
+    echo "pre-commit: refusing the commit. The phase documentation above is" >&2
+    echo "incomplete. See AGENTS.md section 20 for the required report fields." >&2
+    echo "To bypass deliberately: git commit --no-verify" >&2
+    exit 1
+fi

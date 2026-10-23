@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TradeQuest</string>
+
+    <string name="nav_home">Home</string>
+    <string name="nav_market_library">Markets</string>
+    <string name="nav_trading">Trading</string>
+    <string name="nav_challenge">Challenge</string>
+    <string name="nav_news">News</string>
+    <string name="nav_journal">Journal</string>
+    <string name="nav_history">History</string>
+    <string name="nav_settings">Settings</string>
+
+    <string name="placeholder_title">Not implemented yet</string>
+    <string name="placeholder_body">This screen is a development placeholder. It is intentionally unfinished and will be built in a later phase.</string>
+
+    <!-- Market Library (Step 2.6) -->
+    <string name="market_library_title">Market Library</string>
+    <plurals name="market_library_count">
+        <item quantity="one">%1$d dataset imported</item>
+        <item quantity="other">%1$d datasets imported</item>
+    </plurals>
+    <string name="market_library_all_datasets">All datasets</string>
+    <string name="market_library_empty_title">No market data yet</string>
+    <string name="market_library_empty_body">Import a historical XAUUSD CSV to build a dataset. Imported datasets appear here and can be used to start a season.</string>
+    <string name="market_library_error_title">Could not read market data</string>
+    <string name="market_detail_instrument">Instrument</string>
+    <string name="market_detail_period">Period</string>
+    <string name="market_detail_duration">Duration</string>
+    <string name="market_detail_candles">Candles</string>
+    <string name="market_detail_news">News events</string>
+    <string name="market_detail_size">Size on disk</string>
+    <string name="market_detail_id">Dataset id</string>
+    <string name="market_detail_gaps_warning">This dataset contains unexpected gaps.</string>
+    <string name="market_status_valid">Valid</string>
+    <string name="market_status_warnings">Warnings</string>
+    <string name="market_status_gaps">Gaps</string>
+
+    <!-- Trade notifications (Step 7.9) -->
+    <string name="notification_channel_trades">Trade activity</string>
+    <string name="notification_channel_trades_description">Fills, stop losses, take profits, margin warnings and challenge results.</string>
+</resources>

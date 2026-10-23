@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Status-bar icon for trade notifications (Step 7.9).
+
+  A notification small icon is drawn as a monochrome mask, so it is defined as a
+  solid white glyph on a transparent field: any colour here is discarded by the
+  system, and a tinted icon would look wrong on some OEM skins. The shape is a
+  rising line chart, standing for the equity curve.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M3.5,18.49l6,-6.01 4,4L22,6.92l-1.41,-1.41 -7.09,7.97 -4,-4L2,16.99z" />
+</vector>

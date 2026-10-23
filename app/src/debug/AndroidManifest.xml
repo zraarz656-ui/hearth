@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug-only manifest overlay.
+
+  Points the application class at the debug subclass so diagnostics and dataset
+  seeding run, and adds a second launcher icon that opens the log screen.
+
+  Everything else is inherited from the main manifest, so the release build is
+  unaffected by this file existing.
+
+  `tools:replace` is required because the main manifest already declares
+  android:name; without it the merger reports a conflict rather than letting the
+  debug variant win.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        android:name=".debug.DebugTradeQuestApplication"
+        tools:replace="android:name">
+
+        <!--
+          A second launcher entry, so the log is reachable from the home screen
+          without a cable or a hidden gesture. Separate `taskAffinity` keeps it
+          out of the main app's task, so opening the log does not disturb
+          whatever the tester was doing on the chart.
+        -->
+        <activity
+            android:name=".debug.DebugLogActivity"
+            android:exported="true"
+            android:label="TradeQuest Debug"
+            android:taskAffinity="com.tradequest.app.debug.log"
+            android:theme="@style/Theme.TradeQuest">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

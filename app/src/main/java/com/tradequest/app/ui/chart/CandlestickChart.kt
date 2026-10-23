@@ -562,7 +562,9 @@ fun CandlestickChart(
                             // a mispairing rather than the two sequential gestures it
                             // actually is. The device log was full of these.
                             endGesture()
-                            ChartDiagnosticsHook.onGesture?.invoke("FLING", true)
+                            // The fling's own bracket is opened and closed by
+                            // [FlingHandle], so a cancelled fling cannot leave a
+                            // `begin FLING` behind.
                             fling.start(scope) {
                                 runFling(
                                     velocityPxPerSec = velocityX,
@@ -575,7 +577,6 @@ fun CandlestickChart(
                                         latestOnViewportChange(next)
                                     },
                                 )
-                                ChartDiagnosticsHook.onGesture?.invoke("FLING", false)
                             }
                         } else {
                             endGesture()
@@ -703,16 +704,53 @@ private fun JumpToLatestButton(
 private class FlingHandle {
     private var job: Job? = null
 
+    /**
+     * Identifies the fling that currently owns the `FLING` bracket.
+     *
+     * Incremented per [start]. A cancelled fling's `finally` still runs, and it
+     * must not close a bracket that a *newer* fling has since opened — so the
+     * cleanup carries the generation it belongs to and gives up if it is stale.
+     */
+    private var generation = 0
+
+    /** True between the `begin FLING` and its matching `end FLING`. */
+    private var open = false
+
     /** Starts [block], replacing any fling already running. */
     fun start(scope: kotlinx.coroutines.CoroutineScope, block: suspend () -> Unit) {
-        job?.cancel()
-        job = scope.launch { block() }
+        // Close the previous fling's bracket before opening this one, or the two
+        // would nest and a reader could not pair them.
+        closeBracket()
+        val mine = ++generation
+        ChartDiagnosticsHook.onGesture?.invoke("FLING", true)
+        open = true
+        job = scope.launch {
+            try {
+                block()
+            } finally {
+                // Runs when the fling comes to rest *and* when it is cancelled.
+                // Owning the bracket here rather than inside [block] is the point:
+                // a cancelled fling never reached the end of [block], so it left a
+                // `begin FLING` with no `end` — visible in a device log.
+                if (mine == generation) closeBracket()
+            }
+        }
     }
 
     /** Stops the running fling, if any. Safe to call repeatedly. */
     fun cancel() {
         job?.cancel()
         job = null
+        // The `finally` above also runs on cancellation, but it is asynchronous.
+        // Closing here guarantees the bracket is shut before a new gesture opens
+        // its own, which is what keeps the log pairing correct.
+        closeBracket()
+    }
+
+    private fun closeBracket() {
+        if (!open) return
+        open = false
+        ChartDiagnosticsHook.onGesture?.invoke("FLING", false)
     }
 }
 

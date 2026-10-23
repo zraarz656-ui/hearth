@@ -554,6 +554,14 @@ fun CandlestickChart(
                             // is the one gesture whose cost lands *after* the release.
                             // Naming it FLING separates it from the pan that preceded
                             // it, which is what a frame-attribution pass needs.
+                            //
+                            // The drag is closed *first*. `endGesture` reads the
+                            // mutable `gesture`, and the fling's `begin` used to be
+                            // emitted before it, so the two brackets nested and a
+                            // reader saw `begin FLING` / `end PAN` — which looks like
+                            // a mispairing rather than the two sequential gestures it
+                            // actually is. The device log was full of these.
+                            endGesture()
                             ChartDiagnosticsHook.onGesture?.invoke("FLING", true)
                             fling.start(scope) {
                                 runFling(
@@ -569,8 +577,9 @@ fun CandlestickChart(
                                 )
                                 ChartDiagnosticsHook.onGesture?.invoke("FLING", false)
                             }
+                        } else {
+                            endGesture()
                         }
-                        endGesture()
                     }
                 },
         ) {

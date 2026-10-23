@@ -2057,7 +2057,13 @@ apksigner verify --print-certs app-debug.apk | grep 'SHA-256 digest'
 ```
 
 Keep the signing key on persistent storage if over-installing ever needs to be
-guaranteed.
+guaranteed. A copy is kept at `/workspace/.toolchain/keys/debug.keystore`; after a
+restart, restore it before building so the signature stays stable:
+
+```
+mkdir -p /home/openhands/.android
+cp /workspace/.toolchain/keys/debug.keystore /home/openhands/.android/debug.keystore
+```
 
 Content: device header, seed result, and **real frame timing**. The frame
 monitor uses `Choreographer.postFrameCallback` and reports avg/p50/p95/p99/max

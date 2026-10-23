@@ -2019,6 +2019,27 @@ Two changes keep it fixed:
 Any future multi-line `.format` must keep the whole concatenation as the
 receiver. Grep for `+$` followed by `.format(` before adding one.
 
+#### Serving an APK to the device
+
+`/workspace/apk-share/serve.sh` runs a watchdog loop around
+`python3 -m http.server 12000`, because a bare server process is reaped by the
+sandbox and the user sees a 502 from the proxy. The loop is stateless on purpose:
+the failure it handles is "process vanished", and a watchdog holding a pidfile can
+get stuck believing a dead server is alive.
+
+The watchdog does **not** survive a sandbox restart. When the container is
+recreated the loop is killed and `/tmp` (including its log) is wiped, so a 502
+with an empty process list means "restart the watchdog", not "the APK is gone" —
+the files in `/workspace/apk-share/` persist. Recovery:
+
+```
+nohup /workspace/apk-share/serve.sh > /dev/null 2>&1 &
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:12000/TradeQuest-0.1.0-debug.apk
+```
+
+Always re-verify the public URL and its checksum after a restart; the proxy
+routing is rebuilt with the container.
+
 Content: device header, seed result, and **real frame timing**. The frame
 monitor uses `Choreographer.postFrameCallback` and reports avg/p50/p95/p99/max
 intervals plus jank counts over a 300-frame window. This is the only way to get

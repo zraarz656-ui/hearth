@@ -1,5 +1,7 @@
 package com.tradequest.app.core.database.player
 
+import com.tradequest.app.core.challenge.SeasonMode
+
 import com.tradequest.app.core.simulation.clock.ClockAnchor
 import com.tradequest.app.core.simulation.clock.ClockMode
 import com.tradequest.app.core.simulation.clock.ClockStore

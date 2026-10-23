@@ -1653,3 +1653,204 @@ Unverified Requirements:
 Next Phase:
 - None. Phase 10 is the gate; Phase 11 is not started.
 ```
+
+
+## Phase 11 — Challenge Mode — COMPLETE
+
+Turn a dataset into a prop-firm challenge: one active season, the plan's rules, a
+score out of 100, a live dashboard, a history of every attempt and a personal best
+that keeps a first attempt distinguishable from a repeat.
+
+### Implemented
+
+- **Season lifecycle (11.1-11.3).** `PlayerRepository.startSeason` creates a season
+  at the plan's $10,000 start, abandoning any active one first. The abandonment and
+  its history record are one transaction, so a crash cannot abandon without
+  recording. A switch to a different dataset is the same call: `confirmAbandon`
+  makes "abandon without asking" unrepresentable at the call site, and a `false`
+  answer returns `ConfirmationRequired` having written nothing.
+- **Challenge rules (11.4).** `ChallengeRules` holds the plan's figures — 15% profit
+  target, 20 minimum trading days, 3% daily loss, 10% overall loss, 3 daily strikes
+  — and derives the floors. The overall floor is asserted to equal the engine's own
+  `RiskLimits` static floor, so the dashboard cannot fail a season at a level the
+  engine never reaches.
+- **Evaluation and scoring (11.5, 11.6).** `ChallengeEvaluator` returns a
+  `ChallengeVerdict`; `ChallengeScorer` returns a `ChallengeScore` across the four
+  weighted dimensions (profit 40, risk control 30, consistency 20, discipline 10),
+  titled by band. `ChallengeCoordinator` derives the verdict, the score and the
+  dashboard from one `ChallengeProgress` in one call, so they cannot disagree.
+- **Dashboard (11.8).** `ChallengeDashboardState` carries balance, equity, profit,
+  target progress, day count against the minimum, strikes against the allowance, and
+  the remaining daily and overall budgets. The daily budget is measured from the
+  day's own reference equity, the same figure the engine enforces.
+- **History and personal bests (11.9-11.11).** `ChallengeHistoryRepository` is a port
+  in `core.challenge`, implemented in `core.database.player` as
+  `RoomChallengeHistoryRepository` (rule 4). Writes are idempotent by season.
+  `PersonalBest` reports the best overall *and* the best first attempt, with the
+  attempt ordinal, so a replay never overwrites the first try.
+- **Wiring (the gap this phase closed).** `ChallengeLauncher` is a new port; the
+  implementation in `AppContainer` is the only place that creates a season *and*
+  attaches the clock. `MainActivity` and the Market Library's "Start challenge"
+  action call it, with an abandon confirmation dialog. `ensureClockAttached` runs on
+  app start and before a catch-up, so a season that outlived the process is live
+  again.
+
+### Files created
+
+- `core/challenge/`: `ChallengeRules.kt`, `ChallengeEvaluator.kt`,
+  `ChallengeScoring.kt`, `ChallengeCoordinator.kt`, `ChallengeProgressReader.kt`,
+  `ChallengeProgressStore.kt`, `ChallengeService.kt`, `ChallengeDashboardState.kt`,
+  `ChallengeHistory.kt`, `SeasonLifecycle.kt`, `TradingDayLedger.kt`,
+  `ChallengeLauncher.kt`.
+- `core/database/player/`: `ChallengeRecordEntity.kt`, `ChallengeMappers.kt`,
+  `RoomChallengeHistoryRepository.kt`, `RoomChallengeProgressStore.kt`.
+- `feature/challenge/`: `ChallengeDashboardViewModel.kt`, `ChallengeOverviewSource.kt`;
+  `feature/history/HistoryViewModel.kt`; `ui/components/ChallengeLabels.kt`.
+- Tests: `core/challenge/ChallengeFixtures.kt`, `core/challenge/ChallengeRulesTest.kt`,
+  `core/database/player/ChallengeHistoryTest.kt`, `di/ChallengeLauncherTest.kt`.
+
+### Files modified
+
+- `core/database/player/`: `PlayerDao.kt`, `PlayerDatabase.kt` (v3),
+  `PlayerMigrations.kt`, `PlayerRepository.kt`, `RoomClockStore.kt`.
+- `di/AppContainer.kt` — the launcher, `attachClockTo`, `ensureClockAttached`.
+- `feature/market/MarketLibraryViewModel.kt`, `MarketLibraryScreen.kt` — the start
+  action and the abandon confirmation.
+- `feature/challenge/ChallengeDashboardScreen.kt`, `feature/history/HistoryScreen.kt`,
+  `navigation/TradeQuestNavHost.kt`, `MainActivity.kt`, `res/values/strings.xml`.
+- `feature/trading/TradingViewModel.kt`, `TradingSessionSource.kt` — `syncChallenge`.
+- Tests: `PlayerRepositoryTest.kt`, `MarketLibraryViewModelTest.kt`,
+  `TradingViewModelTest.kt` updated for the new constructors.
+
+### Decisions worth recording
+
+- **The launcher reads the dataset's bounds before creating the season.** A season
+  on a dataset with no candles could never advance and would still hold the
+  single-active-season slot, leaving a challenge that can neither run nor be
+  replaced without confirmation. Resolving the bounds first refuses an unreplayable
+  dataset before anything is written. The bounds are also the season's start
+  instant, so the read is needed regardless.
+- **The clock is attached after the season exists.** The clock persists its anchor
+  keyed by season id, so it needs the id the transaction assigned. Attaching first
+  would need an id chosen before the dataset is validated, and a refusal must leave
+  no anchor behind.
+- **`ChallengeHistoryRepository` both reads and writes.** If writing a record were a
+  separate interface, a caller could persist a terminal season without recording it
+  and the history would silently lose an attempt. One port makes that a single call
+  site.
+- **The day count is derived, not stored.** `TradingDayLedger` is a pure function of
+  the closed trades, so there is no counter to keep in step and nothing to migrate.
+- **The attempt ordinal is read at the one moment it is needed.** It is a property of
+  the dataset's history, not of the season, so it is passed into `historyEntry`
+  rather than carried on the per-tick progress, where it would be a `COUNT(*)` per
+  frame for a figure that changes once a season.
+- **Practice mode is scored but the service forces the verdict back to running.** A
+  loss limit must not end a free-play session; the rules alone would fail it, which
+  is why the forcing exists and is tested.
+
+### Bugs found by tests
+
+- **No production caller of `startSeason` and none of `clock.attach`.** The season
+  could be created and the clock could be attached, but nothing did both, so a
+  started challenge could never advance. Found by inspecting the call graph while
+  writing the tests; fixed by `ChallengeLauncher` and its `AppContainer`
+  implementation, and pinned by `ChallengeLauncherTest` over the real container.
+- **The launcher first created the season before resolving the bounds.** A dataset
+  with no candles produced an active season with no clock binding — a dead
+  challenge holding the single slot. Fixed by resolving the bounds first.
+
+### Verification
+
+- `:app:testDebugUnitTest`: `tests=1083 failures=0 errors=0` across 65 suites.
+  Phase 11 adds 62 test methods: three new suites — `ChallengeRulesTest` (38),
+  `ChallengeHistoryTest` (14), `ChallengeLauncherTest` (8) — and two cases added to
+  `PlayerMigrationTest` for the 2->3 migration. Phase 10's section records 1011.
+- The 2->3 migration is run against a real v2 database by `MigrationTestHelper`,
+  which validates the result against the exported schema, so the hand-written DDL
+  cannot drift from `ChallengeRecordEntity` unnoticed.
+- `:app:assembleDebug` and `:app:lintDebug` both succeed.
+- No INTERNET permission: confirmed absent from the merged debug manifest.
+- `tools/check_phase_reports.py` and `tools/check_price_scale.py` both pass.
+
+### Unverified requirements
+
+- **No device or emulator (no `/dev/kvm`).** The dashboard, the start button and the
+  abandon dialog have not been seen or touched. Their state models and the launcher
+  are unit-tested; the Compose UI is not.
+- **The catch-up worker has not run against a real elapsed time.** `catchUpActiveSeason`
+  is wired and attaches the clock first, but the "app closed for an hour, reopen and
+  the season has advanced" path is unverified end-to-end without a device.
+- **The score bands and weights are the plan's, not calibrated against play.** That
+  40/30/20/10 produces a fair-feeling score is a design choice, not a measurement.
+- **The minimum-days rule's interaction with a long season is untested past 20 days.**
+  The boundary at 19 versus 20 days is tested; a season running to the dataset's end
+  without reaching 20 days is not.
+
+### Phase completion report
+
+```
+PHASE COMPLETION REPORT
+
+Phase: 11 — Challenge Mode
+Status: COMPLETE
+
+Implemented:
+- Season lifecycle: one active season, start at $10,000, abandon-with-confirmation
+- Challenge rules: 15% target, 20 days, 3% daily, 10% overall, 3 strikes
+- Evaluation, scoring out of 100 across four weighted dimensions, and titles
+- ChallengeCoordinator deriving verdict, score and dashboard from one progress value
+- Dashboard state: balance, equity, progress, days, strikes, remaining budgets
+- History repository port and Room adapter, idempotent by season
+- Personal bests with the first attempt kept distinct from repeats
+- ChallengeLauncher port and AppContainer implementation: season + clock in one call
+- ensureClockAttached on app start and before catch-up
+- Market Library start action, abandon confirmation dialog, navigation wiring
+- 62 new tests; 1083 total, 0 failures
+
+Files Created:
+- core/challenge/ChallengeRules.kt, ChallengeEvaluator.kt, ChallengeScoring.kt,
+  ChallengeCoordinator.kt, ChallengeProgressReader.kt, ChallengeProgressStore.kt,
+  ChallengeService.kt, ChallengeDashboardState.kt, ChallengeHistory.kt,
+  SeasonLifecycle.kt, TradingDayLedger.kt, ChallengeLauncher.kt
+- core/database/player/ChallengeRecordEntity.kt, ChallengeMappers.kt,
+  RoomChallengeHistoryRepository.kt, RoomChallengeProgressStore.kt
+- feature/challenge/ChallengeDashboardViewModel.kt, ChallengeOverviewSource.kt
+- feature/history/HistoryViewModel.kt, ui/components/ChallengeLabels.kt
+- Tests: ChallengeFixtures.kt, ChallengeRulesTest.kt, ChallengeHistoryTest.kt,
+  ChallengeLauncherTest.kt
+
+Files Modified:
+- core/database/player/PlayerDao.kt, PlayerDatabase.kt, PlayerMigrations.kt,
+  PlayerRepository.kt, RoomClockStore.kt
+- di/AppContainer.kt
+- feature/market/MarketLibraryViewModel.kt, MarketLibraryScreen.kt
+- feature/challenge/ChallengeDashboardScreen.kt, feature/history/HistoryScreen.kt
+- feature/trading/TradingViewModel.kt, TradingSessionSource.kt
+- navigation/TradeQuestNavHost.kt, MainActivity.kt, res/values/strings.xml
+- Tests: PlayerRepositoryTest.kt, MarketLibraryViewModelTest.kt,
+  TradingViewModelTest.kt
+
+Build Result:
+- :app:compileDebugKotlin succeeds; :app:assembleDebug and :app:lintDebug succeed
+
+Tests Executed:
+- 1083
+
+Tests Passed:
+- 1083
+
+Tests Failed:
+- 0
+
+Known Issues:
+- No on-device verification of the dashboard, the start button or the abandon dialog
+- The catch-up path is unverified end-to-end against real elapsed time
+
+Unverified Requirements:
+- The Compose UI of the dashboard and the Market Library start action
+- That a season left for an hour advances on reopen as intended
+- Score weights and bands are the plan's figures, not calibrated against play
+
+Next Phase:
+- Phase 12. Phases 12-14 remain; the hard gate is after Phase 14.
+```

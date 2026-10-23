@@ -3,6 +3,7 @@ package com.tradequest.app.feature.trading
 import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import com.tradequest.app.core.challenge.ChallengeEvaluation
 import com.tradequest.app.core.chart.renderer.FormingCandleView
 import com.tradequest.app.core.chart.timeframe.Timeframe
 import com.tradequest.app.core.chart.viewport.ChartTimeframeAnchor
@@ -12,10 +13,12 @@ import com.tradequest.app.core.database.market.MarketDatasetEntity
 import com.tradequest.app.core.database.market.RoomMarketRepository
 import com.tradequest.app.core.replay.InMemoryReplayStore
 import com.tradequest.app.core.risk.RiskLockBps
+import com.tradequest.app.core.trading.AccountState
 import com.tradequest.app.core.trading.ContractSpec
 import com.tradequest.app.core.trading.OrderSide
 import com.tradequest.app.core.trading.OrderType
 import com.tradequest.app.core.trading.TradingContext
+import com.tradequest.app.core.trading.TradingState
 import com.tradequest.app.ui.theme.ThemeMode
 import com.tradequest.app.ui.theme.chartStyleFor
 import kotlinx.coroutines.Dispatchers
@@ -71,6 +74,14 @@ class TradingViewModelTest {
     private val t0 = 1_704_672_000_000L
     private val minuteMs = 60_000L
 
+    /** One call the ViewModel made to [TradingSessionSource.syncChallenge]. */
+    private data class ChallengeSyncCall(
+        val tradingState: TradingState,
+        val account: AccountState,
+        val equityMicros: Long,
+        val atSimUtcMs: Long,
+    )
+
     /**
      * A controllable stand-in for the real clock-backed source.
      *
@@ -104,6 +115,28 @@ class TradingViewModelTest {
          */
         var liveSession: LiveTradingSession? = null
         override suspend fun createLiveSession(): LiveTradingSession? = liveSession
+
+        /**
+         * The last challenge sync the ViewModel requested, or null.
+         *
+         * The ViewModel does not evaluate a challenge itself — that would put the
+         * challenge rules in the trading feature — so the test records what it was
+         * handed and can assert the call happened with the state the panel shows.
+         */
+        var lastChallengeSync: ChallengeSyncCall? = null
+
+        /** A challenge evaluation to return, or null to model "no season". */
+        var challengeEvaluation: ChallengeEvaluation? = null
+
+        override suspend fun syncChallenge(
+            tradingState: TradingState,
+            account: AccountState,
+            equityMicros: Long,
+            atSimUtcMs: Long,
+        ): ChallengeEvaluation? {
+            lastChallengeSync = ChallengeSyncCall(tradingState, account, equityMicros, atSimUtcMs)
+            return challengeEvaluation
+        }
 
         /** True once [endSeason] has closed the clock, so the flow has completed. */
         val isClockClosed: Boolean get() = instants.isClosedForReceive

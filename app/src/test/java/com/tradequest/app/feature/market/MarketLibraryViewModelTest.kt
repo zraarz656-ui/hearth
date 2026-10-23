@@ -1,6 +1,8 @@
 package com.tradequest.app.feature.market
 
 import androidx.test.core.app.ApplicationProvider
+import com.tradequest.app.core.challenge.ChallengeLaunchResult
+import com.tradequest.app.core.challenge.ChallengeLauncher
 import com.tradequest.app.core.database.market.MarketDatabase
 import com.tradequest.app.core.database.market.MarketDatasetEntity
 import com.tradequest.app.core.database.market.RoomMarketRepository
@@ -14,6 +16,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -36,6 +39,7 @@ class MarketLibraryViewModelTest {
     private val dispatcher = StandardTestDispatcher()
     private lateinit var db: MarketDatabase
     private lateinit var repository: RoomMarketRepository
+    private lateinit var launcher: RecordingLauncher
     private lateinit var viewModel: MarketLibraryViewModel
 
     private val t0 = 1_705_276_800_000L
@@ -45,7 +49,8 @@ class MarketLibraryViewModelTest {
         Dispatchers.setMain(dispatcher)
         db = MarketDatabase.create(ApplicationProvider.getApplicationContext())
         repository = RoomMarketRepository(db)
-        viewModel = MarketLibraryViewModel(repository)
+        launcher = RecordingLauncher()
+        viewModel = MarketLibraryViewModel(repository, launcher)
     }
 
     @After
@@ -67,6 +72,34 @@ class MarketLibraryViewModelTest {
 
     private suspend fun awaitState(predicate: (MarketLibraryState) -> Boolean): MarketLibraryState =
         viewModel.state.first(predicate)
+
+    /**
+     * Records what the screen asked the launcher to do and answers with a scripted
+     * result.
+     *
+     * A fake rather than the real launcher because the real one writes a season and
+     * binds a `SimulationClock`; those are the composition root's behaviour and are
+     * exercised where the container is. What this test must pin is the *screen's*
+     * contract: that a start with no confirmation never abandons, and that a
+     * confirmation answer is forwarded.
+     */
+    private class RecordingLauncher(
+        var result: ChallengeLaunchResult = ChallengeLaunchResult.Started("s1", "A"),
+        var failure: Exception? = null,
+    ) : ChallengeLauncher {
+        data class Call(val datasetId: String, val confirmAbandon: Boolean)
+
+        val calls = mutableListOf<Call>()
+
+        override suspend fun startChallenge(
+            datasetId: String,
+            confirmAbandon: Boolean,
+        ): ChallengeLaunchResult {
+            calls += Call(datasetId, confirmAbandon)
+            failure?.let { throw it }
+            return result
+        }
+    }
 
     @Test
     fun `empty database shows the empty state`() = runTest(dispatcher) {
@@ -141,6 +174,117 @@ class MarketLibraryViewModelTest {
         advanceUntilIdle()
 
         assertTrue(awaitState { it is MarketLibraryState.Empty } is MarketLibraryState.Empty)
+    }
+
+    // ---------- Starting a challenge (Steps 11.1-11.3) ----------
+
+    @Test
+    fun `starting a challenge on the selected dataset asks the launcher without confirming`() =
+        runTest(dispatcher) {
+            insert("ds_a", "A")
+            advanceUntilIdle()
+            awaitState { it is MarketLibraryState.Loaded }
+
+            viewModel.startChallenge("ds_a")
+            advanceUntilIdle()
+
+            assertEquals(
+                listOf(RecordingLauncher.Call("ds_a", confirmAbandon = false)),
+                launcher.calls,
+            )
+        }
+
+    @Test
+    fun `a running challenge surfaces the abandonment prompt and starts nothing`() =
+        runTest(dispatcher) {
+            insert("ds_a", "A")
+            insert("ds_b", "B")
+            advanceUntilIdle()
+            awaitState { it is MarketLibraryState.Loaded }
+            launcher.result = ChallengeLaunchResult.ConfirmationRequired("s1")
+
+            viewModel.startChallenge("ds_b")
+            advanceUntilIdle()
+
+            val message = viewModel.challengeStart.value
+            assertTrue(message is ChallengeStartMessage.ConfirmAbandon)
+            assertEquals("ds_b", (message as ChallengeStartMessage.ConfirmAbandon).datasetId)
+            assertEquals("B", message.datasetDisplayName)
+            // The destructive call was never made with confirmation.
+            assertTrue(launcher.calls.none { it.confirmAbandon })
+        }
+
+    @Test
+    fun `confirming the prompt abandons and starts`() = runTest(dispatcher) {
+        insert("ds_a", "A")
+        insert("ds_b", "B")
+        advanceUntilIdle()
+        awaitState { it is MarketLibraryState.Loaded }
+
+        viewModel.confirmAbandon("ds_b")
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(RecordingLauncher.Call("ds_b", confirmAbandon = true)),
+            launcher.calls,
+        )
+        assertTrue(viewModel.challengeStart.value is ChallengeStartMessage.Started)
+    }
+
+    @Test
+    fun `a missing dataset is reported rather than started`() = runTest(dispatcher) {
+        insert("ds_a", "A")
+        advanceUntilIdle()
+        awaitState { it is MarketLibraryState.Loaded }
+        launcher.result = ChallengeLaunchResult.DatasetNotFound("ds_gone")
+
+        viewModel.startChallenge("ds_gone")
+        advanceUntilIdle()
+
+        assertTrue(viewModel.challengeStart.value is ChallengeStartMessage.DatasetNotFound)
+    }
+
+    @Test
+    fun `an empty dataset is reported rather than started`() = runTest(dispatcher) {
+        insert("ds_a", "A")
+        advanceUntilIdle()
+        awaitState { it is MarketLibraryState.Loaded }
+        launcher.result = ChallengeLaunchResult.DatasetNotReplayable("ds_a")
+
+        viewModel.startChallenge("ds_a")
+        advanceUntilIdle()
+
+        assertTrue(viewModel.challengeStart.value is ChallengeStartMessage.DatasetNotReplayable)
+    }
+
+    @Test
+    fun `a launcher failure is reported rather than thrown`() = runTest(dispatcher) {
+        insert("ds_a", "A")
+        advanceUntilIdle()
+        awaitState { it is MarketLibraryState.Loaded }
+        launcher.failure = IllegalStateException("disk full")
+
+        viewModel.startChallenge("ds_a")
+        advanceUntilIdle()
+
+        val message = viewModel.challengeStart.value
+        assertTrue(message is ChallengeStartMessage.Failed)
+        assertEquals("disk full", (message as ChallengeStartMessage.Failed).message)
+    }
+
+    @Test
+    fun `dismissing the prompt clears it`() = runTest(dispatcher) {
+        insert("ds_a", "A")
+        advanceUntilIdle()
+        awaitState { it is MarketLibraryState.Loaded }
+        launcher.result = ChallengeLaunchResult.ConfirmationRequired("s1")
+
+        viewModel.startChallenge("ds_a")
+        advanceUntilIdle()
+        assertTrue(viewModel.challengeStart.value != null)
+
+        viewModel.dismissChallengeStart()
+        assertNull(viewModel.challengeStart.value)
     }
 
     @Test

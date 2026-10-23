@@ -5,8 +5,10 @@ import androidx.compose.ui.Modifier
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import com.tradequest.app.core.challenge.ChallengeLauncher
 import com.tradequest.app.core.market.MarketRepository
 import com.tradequest.app.feature.challenge.ChallengeDashboardScreen
+import com.tradequest.app.feature.challenge.ChallengeOverviewSource
 import com.tradequest.app.feature.history.HistoryScreen
 import com.tradequest.app.feature.home.HomeScreen
 import com.tradequest.app.feature.journal.JournalScreen
@@ -20,7 +22,9 @@ import com.tradequest.app.feature.trading.TradingSessionSource
 fun TradeQuestNavHost(
     navController: NavHostController,
     marketRepository: MarketRepository,
+    challengeLauncher: ChallengeLauncher,
     sessionSource: TradingSessionSource,
+    challengeSource: ChallengeOverviewSource,
     modifier: Modifier = Modifier,
 ) {
     NavHost(
@@ -30,15 +34,22 @@ fun TradeQuestNavHost(
     ) {
         composable(Destination.HOME.route) { HomeScreen() }
         composable(Destination.MARKET_LIBRARY.route) {
-            MarketLibraryScreen(repository = marketRepository)
+            MarketLibraryScreen(
+                repository = marketRepository,
+                launcher = challengeLauncher,
+            )
         }
         composable(Destination.TRADING.route) {
             TradingScreen(repository = marketRepository, sessionSource = sessionSource)
         }
-        composable(Destination.CHALLENGE.route) { ChallengeDashboardScreen() }
+        composable(Destination.CHALLENGE.route) {
+            ChallengeDashboardScreen(source = challengeSource)
+        }
         composable(Destination.JOURNAL.route) { JournalScreen() }
         composable(Destination.NEWS.route) { NewsScreen() }
-        composable(Destination.HISTORY.route) { HistoryScreen() }
+        composable(Destination.HISTORY.route) {
+            HistoryScreen(source = challengeSource)
+        }
         composable(Destination.SETTINGS.route) { SettingsScreen() }
     }
 }

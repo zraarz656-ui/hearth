@@ -38,6 +38,33 @@ interface PlayerDao {
     fun observeActiveSeason(): Flow<SeasonEntity?>
 
     /**
+     * Every season that has ended, newest first (Step 11.9).
+     *
+     * The live `Season` rows, not the `ChallengeRecord` summaries: this is what a
+     * "review previous challenges" screen reads when the season is still present.
+     * History that must survive deletion reads `ChallengeRecord` instead.
+     */
+    @Query(
+        "SELECT * FROM Season WHERE status != 'ACTIVE' " +
+            "ORDER BY completedAtSimUtcMs DESC, createdAtRealUtcMs DESC",
+    )
+    fun observeFinishedSeasons(): Flow<List<SeasonEntity>>
+
+    /**
+     * Marks the active season ABANDONED and returns its id (Step 11.3).
+     *
+     * A targeted update rather than a read-then-write, so two concurrent callers
+     * cannot both observe an active season and both try to supersede it. The
+     * return value is the row count: 0 means there was nothing active to abandon,
+     * which the caller treats as "the switch may proceed" rather than an error.
+     */
+    @Query(
+        "UPDATE Season SET status = 'ABANDONED', completedAtSimUtcMs = :completedAtSimUtcMs, " +
+            "outcomeReason = :reason WHERE status = 'ACTIVE'",
+    )
+    suspend fun abandonActiveSeason(completedAtSimUtcMs: Long, reason: String?): Int
+
+    /**
      * Inserts a season only if no other season is ACTIVE.
      *
      * Step 11.2: only one Challenge Mode season may be active at a time. The
@@ -243,6 +270,47 @@ interface PlayerDao {
 
     @Query("DELETE FROM ReplayState WHERE seasonId = :seasonId")
     suspend fun deleteReplayState(seasonId: String): Int
+
+    // ---------- Challenge records (Steps 11.9, 11.11) ----------
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertChallengeRecord(record: ChallengeRecordEntity)
+
+    @Query(
+        "SELECT * FROM ChallengeRecord ORDER BY completedAtRealUtcMs DESC LIMIT :limit",
+    )
+    fun observeChallengeRecords(limit: Int): Flow<List<ChallengeRecordEntity>>
+
+    @Query(
+        "SELECT * FROM ChallengeRecord WHERE datasetId = :datasetId " +
+            "ORDER BY completedAtRealUtcMs DESC LIMIT :limit",
+    )
+    suspend fun challengeRecordsFor(datasetId: String, limit: Int): List<ChallengeRecordEntity>
+
+    @Query("SELECT * FROM ChallengeRecord WHERE seasonId = :seasonId LIMIT 1")
+    suspend fun challengeRecordForSeason(seasonId: String): ChallengeRecordEntity?
+
+    /**
+     * The highest-scoring record for [datasetId], best first (Step 11.11).
+     *
+     * Ordered by score, then by profit, so two seasons on the same score are
+     * separated by what they actually made. `recordId` breaks a remaining tie, so
+     * the order is total and "the best" is one row rather than an arbitrary one of
+     * several.
+     */
+    @Query(
+        "SELECT * FROM ChallengeRecord WHERE datasetId = :datasetId " +
+            "ORDER BY scorePoints DESC, (finalEquityMicros - startingBalanceMicros) DESC, " +
+            "recordId ASC LIMIT 1",
+    )
+    suspend fun bestChallengeRecord(datasetId: String): ChallengeRecordEntity?
+
+    /** How many attempts a dataset has had, used to number the next one (Step 11.11). */
+    @Query("SELECT COUNT(*) FROM ChallengeRecord WHERE datasetId = :datasetId")
+    suspend fun challengeRecordCount(datasetId: String): Int
+
+    @Query("SELECT COUNT(*) FROM ChallengeRecord")
+    suspend fun countChallengeRecords(): Int
 
     // ---------- Settings ----------
 

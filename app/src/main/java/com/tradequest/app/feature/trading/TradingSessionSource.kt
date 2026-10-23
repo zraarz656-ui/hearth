@@ -1,5 +1,8 @@
 package com.tradequest.app.feature.trading
 
+import com.tradequest.app.core.challenge.ChallengeEvaluation
+import com.tradequest.app.core.trading.AccountState
+import com.tradequest.app.core.trading.TradingState
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -90,4 +93,28 @@ interface TradingSessionSource {
      * [com.tradequest.app.core.replay.ReplayProcessor] performs.
      */
     suspend fun createLiveSession(): LiveTradingSession?
+
+    /**
+     * Evaluates and persists the running season's challenge state (Steps 11.5-11.9).
+     *
+     * # Why this is on this port
+     *
+     * Evaluating a challenge needs three things the Trading feature must not
+     * assemble itself: the season's stored facts, the engine's state, and the
+     * challenge service. All three live behind this port, at the composition root,
+     * which is the only place that knows both the season and the engine. The
+     * ViewModel hands over the state it already holds and receives a verdict.
+     *
+     * Returns null when no season is running or the season is already terminal, so
+     * a caller treats "nothing to evaluate" as a value rather than an error.
+     *
+     * Suspending because it writes to the player database. Called after a clock
+     * advance and after a command, not per frame — see the ViewModel.
+     */
+    suspend fun syncChallenge(
+        tradingState: TradingState,
+        account: AccountState,
+        equityMicros: Long,
+        atSimUtcMs: Long,
+    ): ChallengeEvaluation?
 }

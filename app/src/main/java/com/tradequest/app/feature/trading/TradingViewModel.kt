@@ -3,6 +3,7 @@ package com.tradequest.app.feature.trading
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.tradequest.app.core.challenge.ChallengeDashboardState
 import com.tradequest.app.core.chart.coordinates.PriceAxisRange
 import com.tradequest.app.core.chart.renderer.ChartFrameAssembler
 import com.tradequest.app.core.chart.renderer.ChartRenderState
@@ -21,6 +22,7 @@ import com.tradequest.app.core.risk.RiskLock
 import com.tradequest.app.core.risk.RiskLockBps
 import com.tradequest.app.core.simulation.path.MarketPathBuilder
 import com.tradequest.app.core.simulation.path.MarketPathWindow
+import com.tradequest.app.core.trading.AccountState
 import com.tradequest.app.core.trading.BracketMath
 import com.tradequest.app.core.trading.BracketPlan
 import com.tradequest.app.core.trading.CommandResult
@@ -34,6 +36,7 @@ import com.tradequest.app.core.trading.TradeDirection
 import com.tradequest.app.core.trading.TradeOverlay
 import com.tradequest.app.core.trading.TradingCommand
 import com.tradequest.app.core.trading.TradingEvent
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -186,6 +189,16 @@ class TradingViewModel(
     /** Which trading sheet is showing over the chart. */
     val sheet: StateFlow<TradingSheet> = _sheet.asStateFlow()
 
+    private val _challenge = MutableStateFlow<ChallengeDashboardState?>(null)
+    /**
+     * The running season's challenge figures (Step 11.8).
+     *
+     * Null when no season is running, or when it has not been evaluated yet. The
+     * dashboard reads this; the trading panel does not, so a failure here cannot
+     * affect trading.
+     */
+    val challenge: StateFlow<ChallengeDashboardState?> = _challenge.asStateFlow()
+
     init {
         viewModelScope.launch { load() }
     }
@@ -276,6 +289,47 @@ class TradingViewModel(
             closedTrades = session.closedTrades(),
             markPrices = marks,
         )
+        syncChallenge(session, account)
+    }
+
+    /**
+     * Evaluates the running season's challenge and publishes the dashboard
+     * (Steps 11.5-11.8).
+     *
+     * # Why this is not a separate tick loop
+     *
+     * The challenge is a function of the engine's state, and the engine only moves
+     * when [refreshTradingState] runs — on a tick that moved the price, or after a
+     * command. Evaluating from a second loop would evaluate a state that had not
+     * changed, and could publish a verdict that disagreed with the panel beside it.
+     * Deriving it here means the dashboard and the account are always read from the
+     * same engine state.
+     *
+     * # Why a failure does not propagate
+     *
+     * A challenge evaluation writes to the database, and a write can fail on a
+     * device under pressure. That must not take the trading screen down: the panel
+     * has already been updated above, so the failure leaves the chart usable and
+     * only the dashboard stale. It is caught and dropped for that reason.
+     */
+    private suspend fun syncChallenge(session: LiveTradingSession, account: AccountState) {
+        val tradingState = session.currentState ?: return
+        val atSimUtcMs = tradingState.processedToSimUtcMs
+        try {
+            val evaluation = sessions.syncChallenge(
+                tradingState = tradingState,
+                account = account,
+                equityMicros = account.equityMicros,
+                atSimUtcMs = atSimUtcMs,
+            )
+            if (evaluation != null) {
+                _challenge.value = evaluation.dashboard
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            // Left as-is: a stale dashboard is better than a broken chart.
+        }
     }
 
     /** Re-reads and re-aggregates the active dataset. */

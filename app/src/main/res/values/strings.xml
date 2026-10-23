@@ -39,4 +39,66 @@
     <!-- Trade notifications (Step 7.9) -->
     <string name="notification_channel_trades">Trade activity</string>
     <string name="notification_channel_trades_description">Fills, stop losses, take profits, margin warnings and challenge results.</string>
+
+    <!-- Challenge dashboard (Steps 11.8-11.11) -->
+    <string name="challenge_title">Challenge</string>
+    <string name="challenge_start_action">Start challenge</string>
+    <string name="challenge_start_action_hint">A new challenge begins at $10,000 on this dataset. Only one challenge can run at a time.</string>
+    <string name="challenge_confirm_abandon_title">Abandon the running challenge?</string>
+    <string name="challenge_confirm_abandon_body">Starting a challenge on %1$s will abandon your current challenge and save it to history. Its trades and balance will not carry over.</string>
+    <string name="challenge_confirm_abandon_confirm">Abandon and start</string>
+    <string name="challenge_confirm_abandon_cancel">Keep running</string>
+    <string name="challenge_started_title">Challenge started</string>
+    <string name="challenge_started_body">Your challenge on %1$s has started at $10,000. Open the chart to trade it.</string>
+    <string name="challenge_start_failed_title">Could not start the challenge</string>
+    <string name="challenge_start_no_dataset">That dataset is no longer in the library.</string>
+    <string name="challenge_start_empty_dataset">That dataset has no candles to replay, so a challenge cannot run on it.</string>
+    <string name="challenge_start_dismiss">OK</string>
+    <string name="challenge_no_season_title">No challenge running</string>
+    <string name="challenge_no_season_body">Start a challenge from the Market Library by selecting a dataset. Only one challenge can be active at a time.</string>
+    <string name="challenge_error_title">Could not read challenge data</string>
+    <string name="challenge_section_progress">Progress</string>
+    <string name="challenge_section_limits">Risk limits</string>
+    <string name="challenge_section_score">Score</string>
+    <string name="challenge_balance">Balance</string>
+    <string name="challenge_equity">Equity</string>
+    <string name="challenge_profit">Profit</string>
+    <string name="challenge_target_progress">Target progress</string>
+    <string name="challenge_target">Target</string>
+    <string name="challenge_daily_loss_remaining">Daily loss remaining</string>
+    <string name="challenge_max_loss_remaining">Maximum loss remaining</string>
+    <string name="challenge_trading_days">Trading days</string>
+    <string name="challenge_strikes">Strikes</string>
+    <string name="challenge_status">Status</string>
+    <string name="challenge_score_total">Total score</string>
+    <string name="challenge_score_profit">Profit</string>
+    <string name="challenge_score_risk">Risk control</string>
+    <string name="challenge_score_consistency">Consistency</string>
+    <string name="challenge_score_discipline">Discipline</string>
+    <string name="challenge_history_title">Previous challenges</string>
+    <string name="challenge_history_empty">No challenges have finished yet.</string>
+    <string name="challenge_best_title">Personal bests</string>
+    <string name="challenge_best_empty">Finish a challenge to record a personal best.</string>
+    <string name="challenge_best_first_attempt">First attempt</string>
+    <string name="challenge_best_overall">Best</string>
+    <string name="challenge_status_active">Active</string>
+    <string name="challenge_status_passed">Passed</string>
+    <string name="challenge_status_failed">Failed</string>
+    <string name="challenge_status_abandoned">Abandoned</string>
+    <string name="challenge_title_rookie">Rookie</string>
+    <string name="challenge_title_trader">Trader</string>
+    <string name="challenge_title_pro">Pro</string>
+    <string name="challenge_title_gold_master">Gold Master</string>
+    <string name="challenge_outcome_target">Reached the profit target</string>
+    <string name="challenge_outcome_overall_loss">Breached the overall loss limit</string>
+    <string name="challenge_outcome_strikes">Used all daily strikes</string>
+    <string name="challenge_outcome_superseded">Superseded by a new challenge</string>
+    <plurals name="challenge_attempts">
+        <item quantity="one">%1$d attempt</item>
+        <item quantity="other">%1$d attempts</item>
+    </plurals>
+    <string name="challenge_of_days">%1$d of %2$d</string>
+    <string name="challenge_of_strikes">%1$d of %2$d used</string>
+    <string name="challenge_points_of_max">%1$d / %2$d</string>
+    <string name="challenge_progress_percent">%1$d%%</string>
 </resources>

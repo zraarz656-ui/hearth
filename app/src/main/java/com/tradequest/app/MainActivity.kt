@@ -7,6 +7,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,6 +39,12 @@ private fun TradeQuestApp(container: AppContainer) {
     // Settings table in Phase 2.
     var themeMode by rememberSaveable { mutableStateOf(ThemeMode.DARK) }
 
+    // Binds the clock to the active season, if one survived the process. The clock
+    // is process-scoped and rebuilt from its stored anchor, so without this a
+    // running challenge would be inert until a new one was started (Steps 11.1-11.3).
+    // Keyed on the container so a configuration change does not re-run it.
+    LaunchedEffect(container) { container.onAppStart() }
+
     TradeQuestTheme(mode = themeMode) {
         val navController = rememberNavController()
         val backStackEntry by navController.currentBackStackEntryAsState()
@@ -65,7 +72,9 @@ private fun TradeQuestApp(container: AppContainer) {
             TradeQuestNavHost(
                 navController = navController,
                 marketRepository = container.marketRepository,
+                challengeLauncher = container.challengeLauncher,
                 sessionSource = container.tradingSessionSource,
+                challengeSource = container.challengeOverviewSource,
                 modifier = Modifier.padding(padding),
             )
         }

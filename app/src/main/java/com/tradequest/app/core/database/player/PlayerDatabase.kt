@@ -27,9 +27,10 @@ import androidx.room.RoomDatabase
         BadgeEntity::class,
         ReplayCheckpointEntity::class,
         ReplayStateEntity::class,
+        ChallengeRecordEntity::class,
         SettingEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class PlayerDatabase : RoomDatabase() {

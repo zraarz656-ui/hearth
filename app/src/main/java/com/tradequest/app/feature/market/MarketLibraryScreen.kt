@@ -20,12 +20,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -40,15 +43,22 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.tradequest.app.R
 import com.tradequest.app.core.market.DatasetSummary
+import com.tradequest.app.core.challenge.ChallengeLauncher
 import com.tradequest.app.core.market.MarketFormat
 import com.tradequest.app.core.market.MarketRepository
 
 /**
- * Market Library (Step 2.6).
+ * Market Library (Step 2.6, Steps 11.1-11.3).
  *
  * Lists every imported dataset with its period, duration, candle count, news
  * count, validation status and estimated storage size, and shows a detail pane
  * for the selected dataset.
+ *
+ * The detail pane carries the "Start challenge" action: Step 11.1 says selecting a
+ * dataset creates a season, and Step 11.3 requires confirmation before a running
+ * challenge is abandoned, so the action is explicit rather than a side effect of
+ * tapping a row. A selection is a thing to look at; starting a challenge is a thing
+ * to decide.
  *
  * There is deliberately no delete action here yet. Deleting a dataset that a
  * season is replaying must be refused, and that check needs the season rules
@@ -57,16 +67,22 @@ import com.tradequest.app.core.market.MarketRepository
 @Composable
 fun MarketLibraryScreen(
     repository: MarketRepository,
+    launcher: ChallengeLauncher,
     modifier: Modifier = Modifier,
 ) {
     val viewModel: MarketLibraryViewModel = viewModel(
-        factory = MarketLibraryViewModel.factory(repository),
+        factory = MarketLibraryViewModel.factory(repository, launcher),
     )
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val challengeStart by viewModel.challengeStart.collectAsStateWithLifecycle()
 
     MarketLibraryContent(
         state = state,
+        challengeStart = challengeStart,
         onSelect = viewModel::selectDataset,
+        onStartChallenge = viewModel::startChallenge,
+        onConfirmAbandon = viewModel::confirmAbandon,
+        onDismissChallengeStart = viewModel::dismissChallengeStart,
         modifier = modifier,
     )
 }
@@ -74,78 +90,177 @@ fun MarketLibraryScreen(
 @Composable
 private fun MarketLibraryContent(
     state: MarketLibraryState,
+    challengeStart: ChallengeStartMessage?,
     onSelect: (String) -> Unit,
+    onStartChallenge: (String) -> Unit,
+    onConfirmAbandon: (String) -> Unit,
+    onDismissChallengeStart: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    when (state) {
-        MarketLibraryState.Loading -> CentredMessage(modifier) {
-            CircularProgressIndicator()
-        }
-
-        MarketLibraryState.Empty -> EmptyLibrary(modifier)
-
-        is MarketLibraryState.Failed -> CentredMessage(modifier) {
-            Icon(
-                imageVector = Icons.Filled.Warning,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.error,
-            )
-            Text(
-                text = stringResource(R.string.market_library_error_title),
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(top = 12.dp),
-            )
-            Text(
-                text = state.message,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-        }
-
-        is MarketLibraryState.Loaded -> LazyColumn(
-            modifier = modifier.fillMaxSize(),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            item {
-                Column {
-                    Text(
-                        text = stringResource(R.string.market_library_title),
-                        style = MaterialTheme.typography.headlineSmall,
-                    )
-                    Text(
-                        text = pluralStringResource(
-                            R.plurals.market_library_count,
-                            state.datasets.size,
-                            state.datasets.size,
-                        ),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+    Box(modifier.fillMaxSize()) {
+        when (state) {
+            MarketLibraryState.Loading -> CentredMessage {
+                CircularProgressIndicator()
             }
 
-            state.selected?.let { selected ->
-                item { DatasetDetail(selected) }
-                item {
-                    Text(
-                        text = stringResource(R.string.market_library_all_datasets),
-                        style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.padding(top = 8.dp),
-                    )
-                }
-            }
+            MarketLibraryState.Empty -> EmptyLibrary()
 
-            items(state.datasets, key = { it.datasetId }) { dataset ->
-                DatasetRow(
-                    dataset = dataset,
-                    isSelected = dataset.datasetId == state.selectedDatasetId,
-                    onClick = { onSelect(dataset.datasetId) },
+            is MarketLibraryState.Failed -> CentredMessage {
+                Icon(
+                    imageVector = Icons.Filled.Warning,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                )
+                Text(
+                    text = stringResource(R.string.market_library_error_title),
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(top = 12.dp),
+                )
+                Text(
+                    text = state.message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 4.dp),
                 )
             }
+
+            is MarketLibraryState.Loaded -> LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                item {
+                    Column {
+                        Text(
+                            text = stringResource(R.string.market_library_title),
+                            style = MaterialTheme.typography.headlineSmall,
+                        )
+                        Text(
+                            text = pluralStringResource(
+                                R.plurals.market_library_count,
+                                state.datasets.size,
+                                state.datasets.size,
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+
+                state.selected?.let { selected ->
+                    item {
+                        DatasetDetail(
+                            dataset = selected,
+                            onStartChallenge = { onStartChallenge(selected.datasetId) },
+                        )
+                    }
+                    item {
+                        Text(
+                            text = stringResource(R.string.market_library_all_datasets),
+                            style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+                    }
+                }
+
+                items(state.datasets, key = { it.datasetId }) { dataset ->
+                    DatasetRow(
+                        dataset = dataset,
+                        isSelected = dataset.datasetId == state.selectedDatasetId,
+                        onClick = { onSelect(dataset.datasetId) },
+                    )
+                }
+            }
         }
+
+        ChallengeStartEffect(
+            message = challengeStart,
+            onConfirmAbandon = onConfirmAbandon,
+            onDismiss = onDismissChallengeStart,
+        )
+    }
+}
+
+/**
+ * Renders the challenge-start prompt and messages (Steps 11.1-11.3).
+ *
+ * # Why the confirmation is a dialog and the rest are messages
+ *
+ * Only the abandonment needs an answer. A dialog with no dismiss is wrong — the
+ * trader must be able to keep the running challenge — so it has both a confirm and
+ * a cancel. The outcomes are informational, and are dismissed by the trader rather
+ * than auto-clearing, so a message cannot vanish before it is read.
+ */
+@Composable
+private fun ChallengeStartEffect(
+    message: ChallengeStartMessage?,
+    onConfirmAbandon: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    when (message) {
+        null -> Unit
+
+        is ChallengeStartMessage.ConfirmAbandon -> AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text(stringResource(R.string.challenge_confirm_abandon_title)) },
+            text = {
+                Text(
+                    stringResource(
+                        R.string.challenge_confirm_abandon_body,
+                        message.datasetDisplayName,
+                    ),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { onConfirmAbandon(message.datasetId) }) {
+                    Text(stringResource(R.string.challenge_confirm_abandon_confirm))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = onDismiss) {
+                    Text(stringResource(R.string.challenge_confirm_abandon_cancel))
+                }
+            },
+        )
+
+        else -> AlertDialog(
+            onDismissRequest = onDismiss,
+            title = {
+                Text(
+                    text = stringResource(
+                        if (message is ChallengeStartMessage.Started) {
+                            R.string.challenge_started_title
+                        } else {
+                            R.string.challenge_start_failed_title
+                        },
+                    ),
+                )
+            },
+            text = {
+                Text(
+                    text = when (message) {
+                        is ChallengeStartMessage.Started ->
+                            stringResource(R.string.challenge_started_body, message.datasetDisplayName)
+
+                        is ChallengeStartMessage.DatasetNotFound ->
+                            stringResource(R.string.challenge_start_no_dataset)
+
+                        is ChallengeStartMessage.DatasetNotReplayable ->
+                            stringResource(R.string.challenge_start_empty_dataset)
+
+                        is ChallengeStartMessage.Failed -> message.message
+
+                        is ChallengeStartMessage.ConfirmAbandon -> ""
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = onDismiss) {
+                    Text(stringResource(R.string.challenge_start_dismiss))
+                }
+            },
+        )
     }
 }
 
@@ -222,7 +337,10 @@ private fun DatasetRow(
 }
 
 @Composable
-private fun DatasetDetail(dataset: DatasetSummary) {
+private fun DatasetDetail(
+    dataset: DatasetSummary,
+    onStartChallenge: () -> Unit,
+) {
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceVariant,
@@ -265,6 +383,20 @@ private fun DatasetDetail(dataset: DatasetSummary) {
                 MarketFormat.estimatedBytes(dataset.estimatedStorageBytes),
             )
             DetailRow(stringResource(R.string.market_detail_id), dataset.datasetId)
+
+            Spacer(Modifier.height(12.dp))
+            Button(
+                onClick = onStartChallenge,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(stringResource(R.string.challenge_start_action))
+            }
+            Text(
+                text = stringResource(R.string.challenge_start_action_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp),
+            )
 
             if (dataset.hasUnexpectedGaps) {
                 Spacer(Modifier.height(8.dp))

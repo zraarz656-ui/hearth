@@ -8,6 +8,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -185,5 +186,115 @@ class PlayerMigrationTest {
         } finally {
             db.close()
         }
+    }
+
+    // ---------- Step 11.9-11.11: the ChallengeRecord migration ----------
+
+    @Test
+    fun `migrating 2 to 3 adds the ChallengeRecord table without touching the season`() {
+        // A populated v2 database, exactly as a pre-Phase-11 install would have.
+        helper.createDatabase(PlayerDatabase.NAME, 2).use { db ->
+            db.execSQL(
+                """
+                INSERT INTO Season (
+                    seasonId, datasetId, mode, status, startingBalanceMicros,
+                    balanceMicros, equityMicros, peakEquityMicros, startedAtSimUtcMs,
+                    createdAtRealUtcMs, completedAtSimUtcMs, tradingDayCount,
+                    dailyStrikeCount, scorePoints, outcomeReason
+                ) VALUES (
+                    's1', 'ds_a', 'CHALLENGE', 'PASSED', 10000000000,
+                    11500000000, 11500000000, 11500000000, $t0,
+                    $t0, NULL, 20, 0, 90, 'TARGET_REACHED'
+                )
+                """.trimIndent(),
+            )
+        }
+
+        // Runs MIGRATION_2_3 and validates the schema against app/schemas.
+        val migrated = helper.runMigrationsAndValidate(
+            PlayerDatabase.NAME,
+            3,
+            true,
+            *PlayerMigrations.ALL,
+        )
+
+        // The player's season survived with every field intact: this is the data a
+        // wrong migration would have cost.
+        migrated.query("SELECT * FROM Season WHERE seasonId = 's1'").use { cursor ->
+            assertEquals(1, cursor.count)
+            cursor.moveToFirst()
+            assertEquals(
+                11_500_000_000L,
+                cursor.getLong(cursor.getColumnIndexOrThrow("equityMicros")),
+            )
+            assertEquals(20, cursor.getInt(cursor.getColumnIndexOrThrow("tradingDayCount")))
+            assertEquals(
+                "TARGET_REACHED",
+                cursor.getString(cursor.getColumnIndexOrThrow("outcomeReason")),
+            )
+        }
+
+        // The new table exists and is empty: a pre-Phase-11 install has no history
+        // records, and its next completed season becomes the first.
+        migrated.query("SELECT COUNT(*) FROM ChallengeRecord").use { cursor ->
+            cursor.moveToFirst()
+            assertEquals(0, cursor.getInt(0))
+        }
+        migrated.close()
+    }
+
+    @Test
+    fun `the migrated ChallengeRecord table accepts a row and keys it by season`() {
+        val migrated = helper.createDatabase(PlayerDatabase.NAME, 3)
+        migrated.execSQL(
+            """
+            INSERT INTO ChallengeRecord (
+                recordId, seasonId, datasetId, datasetDisplayName, mode, status,
+                outcome, startingBalanceMicros, finalBalanceMicros, finalEquityMicros,
+                peakEquityMicros, tradingDayCount, dailyStrikeCount, scorePoints,
+                profitPoints, riskControlPoints, consistencyPoints, disciplinePoints,
+                title, attemptOrdinal, closedTradeCount, startedAtSimUtcMs,
+                completedAtSimUtcMs, completedAtRealUtcMs
+            ) VALUES (
+                'record-s1', 's1', 'ds_a', 'Gold A', 'CHALLENGE', 'PASSED',
+                'TARGET_REACHED', 10000000000, 11500000000, 11500000000,
+                11500000000, 20, 0, 90,
+                40, 30, 20, 10,
+                'GOLD_MASTER', 1, 20, $t0,
+                $t0, $t0
+            )
+            """.trimIndent(),
+        )
+
+        migrated.query("SELECT COUNT(*) FROM ChallengeRecord").use { cursor ->
+            cursor.moveToFirst()
+            assertEquals(1, cursor.getInt(0))
+        }
+
+        // `seasonId` is uniquely indexed: the idempotent write the repository relies
+        // on is only idempotent if the database enforces it.
+        val duplicate = runCatching {
+            migrated.execSQL(
+                """
+                INSERT INTO ChallengeRecord (
+                    recordId, seasonId, datasetId, datasetDisplayName, mode, status,
+                    outcome, startingBalanceMicros, finalBalanceMicros, finalEquityMicros,
+                    peakEquityMicros, tradingDayCount, dailyStrikeCount, scorePoints,
+                    profitPoints, riskControlPoints, consistencyPoints, disciplinePoints,
+                    title, attemptOrdinal, closedTradeCount, startedAtSimUtcMs,
+                    completedAtSimUtcMs, completedAtRealUtcMs
+                ) VALUES (
+                    'record-s1-again', 's1', 'ds_a', 'Gold A', 'CHALLENGE', 'PASSED',
+                    'TARGET_REACHED', 10000000000, 11500000000, 11500000000,
+                    11500000000, 20, 0, 90,
+                    40, 30, 20, 10,
+                    'GOLD_MASTER', 1, 20, $t0,
+                    $t0, $t0
+                )
+                """.trimIndent(),
+            )
+        }
+        assertTrue("a second record for the same season must be refused", duplicate.isFailure)
+        migrated.close()
     }
 }

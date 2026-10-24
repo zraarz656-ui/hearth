@@ -491,18 +491,19 @@ internal object DebugDiagnostics {
                 val current = display.mode
                 log(
                     "display",
-                    "refresh=%.2fHz mode=%dx%d@%.2fHz".format(
+                    diagFormat(
+                        "refresh=%.2fHz mode=%dx%d@%.2fHz",
                         display.refreshRate, current.physicalWidth, current.physicalHeight,
                         current.refreshRate,
                     ),
                 )
                 val modes = display.supportedModes.joinToString(" ") {
-                    "${it.physicalWidth}x${it.physicalHeight}@%.2f".format(it.refreshRate)
+                    diagFormat("${it.physicalWidth}x${it.physicalHeight}@%.2f", it.refreshRate)
                 }
                 log("display", "modes=$modes")
                 log(
                     "display",
-                    "hdr=%b wideColor=%b".format(display.isHdr, display.isWideColorGamut),
+                    diagFormat("hdr=%b wideColor=%b", display.isHdr, display.isWideColorGamut),
                 )
             } catch (error: Exception) {
                 log("display", "modes unavailable: ${error::class.java.simpleName}")
@@ -516,7 +517,8 @@ internal object DebugDiagnostics {
         try {
             log(
                 "heap",
-                "start allocated=%dKB limit=%dKB".format(
+                diagFormat(
+                    "start allocated=%dKB limit=%dKB",
                     Debug.getNativeHeapAllocatedSize() / 1024,
                     Runtime.getRuntime().maxMemory() / 1024,
                 ),
@@ -603,7 +605,7 @@ internal object DebugDiagnostics {
      * text. `describe()` reproduces the column layout the device logs used, so
      * existing captures stay readable.
      */
-    private data class ChartStateKey(
+    internal data class ChartStateKey(
         val timeframe: Any,
         val totalBars: Int,
         val barsVisible: Float,
@@ -613,12 +615,10 @@ internal object DebugDiagnostics {
         val forming: Boolean,
         val simulatedUtcMs: Long?,
     ) {
-        fun describe(): String =
-            "tf=%s bars=%d visible=%.1f first=%.2f pad=%.1f autoscale=%b forming=%b sim=%s"
-                .format(
-                    timeframe, totalBars, barsVisible, firstVisibleIndex,
-                    rightPaddingBars, autoScale, forming, simulatedUtcMs ?: "-",
-                )
+        fun describe(): String = describeChartState(
+            timeframe, totalBars, barsVisible, firstVisibleIndex,
+            rightPaddingBars, autoScale, forming, simulatedUtcMs,
+        )
     }
 
     // ---------- frame timing ----------
@@ -658,7 +658,9 @@ internal object DebugDiagnostics {
         enqueue {
             line(
                 "metrics",
-                "n=%d drops=%d worstTotal=%.2fms".format(frames, drops, worstTotalNanos / 1e6),
+                diagFormat(
+                    "n=%d drops=%d worstTotal=%.2fms", frames, drops, worstTotalNanos / 1e6,
+                ),
                 "metrics",
             )
             line("metrics", "  avg  " + stageSummary(avg), "metrics")
@@ -667,9 +669,7 @@ internal object DebugDiagnostics {
     }
 
     private fun stageSummary(values: LongArray): String =
-        STAGE_LABELS.joinToString(" ") { (stage, name) ->
-            "%s=%.2f".format(name, values.getOrElse(stage) { 0L } / 1e6)
-        }
+        formatStageSummary(values, STAGE_LABELS)
 
     private fun installFrameMonitor(application: Application) {
         val monitor = DebugFrameMonitor()
@@ -873,14 +873,86 @@ internal fun formatFrameSummary(
     allocatedPerSecond: Double,
     gcDelta: Long,
 ): String =
-    (
+    diagFormat(
         "n=%d avg=%.2fms p50=%.2f p95=%.2f p99=%.2f max=%.2f jank=%d(>%.1fms) " +
-            "fps~%.0f drop2=%d drop4=%d drop8=%d alloc=%.0fKB/s gc=%d"
-        ).format(
+            "fps~%.0f drop2=%d drop4=%d drop8=%d alloc=%.0fKB/s gc=%d",
         summary.count, summary.avgMs, summary.p50Ms, summary.p95Ms,
         summary.p99Ms, summary.maxMs, summary.jank, summary.jankThresholdMs,
         summary.fps, summary.over2x, summary.over4x, summary.over8x,
         allocatedPerSecond / 1024.0, gcDelta,
+    )
+
+/**
+ * Formats one log line with a fixed, non-locale-dependent number format.
+ *
+ * # Why this exists
+ *
+ * `String.format` without a `Locale` uses the *device's* default, so a phone set
+ * to German renders `avg=16,67ms` where the diagnostics — and every capture
+ * taken on an English phone — read `avg=16.67ms`. Two consequences, both real:
+ *
+ *  1. A capture cannot be compared against an earlier one, or against the
+ *     thresholds in this file's own KDoc (`16.7 ms`, `p95`), because the decimal
+ *     mark moved.
+ *  2. `16,67` is ambiguous rather than merely different: a comma is a thousands
+ *     separator in some locales and a decimal mark in others, so a reader cannot
+ *     tell `16,67` ms from `1667` ms.
+ *
+ * The log is a machine-readable artefact that gets pasted into reports and diffed
+ * between runs, so it must not vary with a setting unrelated to what it measures.
+ * [timestampFormat] already pinned `Locale.US` for exactly this reason; this
+ * applies the same rule to the numbers.
+ *
+ * Everything in the diagnostics goes through here so the rule cannot be applied
+ * to one line and forgotten on the next — which is how the timestamp came to be
+ * pinned while the numbers beside it were not.
+ */
+internal fun diagFormat(format: String, vararg args: Any?): String =
+    java.lang.String.format(Locale.US, format, *args)
+
+/**
+ * Formats one `metrics` line's per-stage columns, e.g. `input=1.20 anim=0.40`.
+ *
+ * A top-level function for the same reason as [formatFrameSummary]: the stage
+ * line is built by a `String.format` that a device crash proved can be wrong, and
+ * a member of a private class is not reachable from a unit test. [labels] is
+ * passed in rather than read from [DebugDiagnostics.STAGE_LABELS] so the test can
+ * drive a fixed stage set.
+ *
+ * [values] is indexed by `FrameMetrics` stage constant; a stage the array does not
+ * cover reads as `0.00` rather than throwing, because a missing attribution is a
+ * gap in the log, not a reason to take the process down.
+ */
+internal fun formatStageSummary(
+    values: LongArray,
+    labels: List<Pair<Int, String>>,
+): String =
+    labels.joinToString(" ") { (stage, name) ->
+        diagFormat("%s=%.2f", name, values.getOrElse(stage) { 0L } / 1e6)
+    }
+
+/**
+ * Formats the chart-state log line, e.g. `tf=M1 bars=500 visible=120.0 ...`.
+ *
+ * Top-level so the line is reachable from a unit test without a chart, a
+ * `Choreographer` or a log file. It is the highest-frequency line in the log —
+ * one per accepted pan frame — and therefore the one whose formatting bug would
+ * be both most likely to reach a device and hardest to spot in a capture.
+ */
+internal fun describeChartState(
+    timeframe: Any?,
+    totalBars: Int,
+    barsVisible: Float,
+    firstVisibleIndex: Float,
+    rightPaddingBars: Float,
+    autoScale: Boolean,
+    forming: Boolean,
+    simulatedUtcMs: Long?,
+): String =
+    diagFormat(
+        "tf=%s bars=%d visible=%.1f first=%.2f pad=%.1f autoscale=%b forming=%b sim=%s",
+        timeframe, totalBars, barsVisible, firstVisibleIndex,
+        rightPaddingBars, autoScale, forming, simulatedUtcMs ?: "-",
     )
 
 /**
@@ -1124,7 +1196,7 @@ private class DebugStallWatchdog {
             if (now - lastReportNanos >= REPORT_INTERVAL_NANOS) {
                 DebugDiagnostics.log(
                     "stall",
-                    "window worst=%dms count=%d".format(worstMs, stalls),
+                    diagFormat("window worst=%dms count=%d", worstMs, stalls),
                 )
                 worstMs = 0
                 stalls = 0

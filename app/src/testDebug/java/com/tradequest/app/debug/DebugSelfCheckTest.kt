@@ -42,12 +42,15 @@ class DebugSelfCheckTest {
         val passes = report.lineSequence().count { it.startsWith("PASS") }
         assertTrue("expected several passing steps, found $passes", passes >= 10)
 
-        // The Phase 12 steps must be present and passing, not merely absent. A
-        // harness that stopped calling `runNewsChecks` would still report zero
-        // failures, which is exactly the silent-hole failure this guards against.
-        for (step in listOf("12.5", "12.4", "12.6", "12.7")) {
+        // Every group the harness runs must be represented. The old assertion
+        // only counted passes and named four Phase 12 steps, so a harness that
+        // stopped calling `runTradingChecks` — or `runWiringChecks`, or
+        // `runPersistenceCheck` — would still pass on the remaining groups and
+        // report a green run with a hole in it. Each entry below is a step that
+        // only exists if its group actually ran.
+        for (step in REQUIRED_STEPS) {
             assertTrue(
-                "no passing self-check step for $step:\n$report",
+                "no passing self-check step matching '$step':\n$report",
                 report.lineSequence().any { it.startsWith("PASS") && it.contains(step) },
             )
         }
@@ -56,6 +59,34 @@ class DebugSelfCheckTest {
         assertTrue(
             "the summary must report zero failures, was: $summary",
             summary.contains("0 failed"),
+        )
+    }
+
+    private companion object {
+        /**
+         * One distinctive step per check group, plus every Phase 12 step.
+         *
+         * A group whose call site is deleted takes all of its steps with it, so a
+         * single representative per group is enough to notice. The Phase 12 steps
+         * are listed individually because that group is the newest and the one
+         * most likely to be dropped from the harness by an unrelated edit.
+         */
+        val REQUIRED_STEPS = listOf(
+            // Wiring.
+            "start a challenge creates the season",
+            // Trading.
+            "the app builds a tradable session for the active season",
+            // Challenge.
+            "the rule set agrees with the engine's own loss floor",
+            // News, blind mode and time warp.
+            "12.5",
+            "12.4",
+            "12.6",
+            "12.7",
+            // Real time.
+            "advances with real elapsed time",
+            // Persistence.
+            "survive a container restart",
         )
     }
 }

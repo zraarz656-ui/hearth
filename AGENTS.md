@@ -2019,6 +2019,24 @@ Two changes keep it fixed:
 Any future multi-line `.format` must keep the whole concatenation as the
 receiver. Grep for `+$` followed by `.format(` before adding one.
 
+#### The log's numbers are pinned to `Locale.US`
+
+The same class of bug, found by the strengthened tests rather than by a device:
+every `.format` call in `DebugDiagnostics` used the *default* locale, so a phone
+set to German or French wrote `avg=16,67ms` where every earlier capture and the
+file's own KDoc thresholds read `16.67`. That is not cosmetic — a comma is a
+decimal mark in some locales and a thousands separator in others, so `16,67` ms
+cannot be told from `1667` ms, and no capture can be diffed against a previous
+one. `timestampFormat` had always pinned `Locale.US`; the numbers beside it had
+not.
+
+All formatting now goes through `diagFormat(format, *args)`, which pins the
+locale in one place so the rule cannot be applied to one line and forgotten on
+the next. `DiagnosticsFormattingTest` sets a comma-decimal default locale and
+asserts the output is unchanged — the only way to catch a formatter that forgot
+its `Locale` without owning a German phone. Add new lines through `diagFormat`,
+never a bare `String.format` or `"...".format(...)`.
+
 #### Serving an APK to the device
 
 `/workspace/apk-share/serve.sh` runs a watchdog loop around

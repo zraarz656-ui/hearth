@@ -36,6 +36,9 @@ internal object ReplayFixtures {
 
     const val SEASON_ID: String = "season_replay"
 
+    /** Stored impact spellings treated as high impact, matching the DAO query. */
+    private val HIGH_IMPACT = setOf("HIGH", "H")
+
     /** $10,000, as Step 6.10 fixes the starting balance. */
     const val START_BALANCE_MICROS: Long = 10_000L * 1_000_000L
 
@@ -183,6 +186,13 @@ internal object ReplayFixtures {
         ): List<NewsItem> = news.filter { it.publishedAtUtcMs in fromUtcMs until toUtcMs }
 
         override suspend fun newsCount(datasetId: String): Int = news.size
+
+        override suspend fun nextHighImpactNews(
+            datasetId: String,
+            afterUtcMs: Long,
+        ): NewsItem? = news
+            .filter { it.publishedAtUtcMs >= afterUtcMs && it.impact.trim().uppercase() in HIGH_IMPACT }
+            .minByOrNull { it.publishedAtUtcMs }
 
         override suspend fun closures(datasetId: String): List<DatasetClosure> = closures
 

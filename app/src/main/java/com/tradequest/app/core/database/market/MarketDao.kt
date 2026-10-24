@@ -147,6 +147,30 @@ interface MarketDao {
     @Query("DELETE FROM NewsEvent WHERE datasetId = :datasetId")
     suspend fun deleteNews(datasetId: String): Int
 
+    /**
+     * High-impact releases at or after [afterUtcMs], soonest first (Step 12.6).
+     *
+     * `UPPER(impact)` is compared rather than `impact` because the stored string
+     * is external data and `"High"` and `"HIGH"` must both match. The impact
+     * vocabulary is closed at two spellings (`HIGH`, `H`) by `NewsImpact`, so
+     * this list is exhaustive rather than a guess.
+     *
+     * A `LIMIT` is required: Time Warp only needs the next one, and a dataset
+     * with a dense schedule should not materialise its whole remainder to answer
+     * that.
+     */
+    @Query(
+        "SELECT * FROM NewsEvent WHERE datasetId = :datasetId " +
+            "AND publishedAtUtcMs >= :afterUtcMs " +
+            "AND UPPER(impact) IN ('HIGH', 'H') " +
+            "ORDER BY publishedAtUtcMs ASC LIMIT :limit",
+    )
+    suspend fun highImpactNewsFrom(
+        datasetId: String,
+        afterUtcMs: Long,
+        limit: Int,
+    ): List<NewsEventEntity>
+
     // ---------- Closures ----------
 
     @Insert(onConflict = OnConflictStrategy.ABORT)

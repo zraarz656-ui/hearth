@@ -64,3 +64,35 @@ data class TradeMarker(
     val isEntry: Boolean,
     val isBuy: Boolean,
 )
+
+/**
+ * How prominently a news flag is drawn (Steps 12.3, 12.4).
+ *
+ * A chart-level enum rather than the news domain's `NewsImpact`, for the same
+ * reason [OverlayLineKind] is chart-level: the renderer draws a red flag or an
+ * amber flag, and must not have read a `NewsRelease` to do it. The feature layer
+ * maps impact to severity, so an unrecognised impact simply produces no flag
+ * rather than a compile error in the renderer.
+ */
+enum class FlagSeverity { HIGH, MEDIUM }
+
+/**
+ * A news marker drawn above the bar where a release lands (Steps 12.3, 12.4).
+ *
+ * # Why an index rather than a timestamp
+ *
+ * The renderer maps buffer indices to pixels directly; a timestamp would have to
+ * be searched for every frame. The feature layer resolves the bar once, when the
+ * flag is built.
+ *
+ * # Why the flag carries a label
+ *
+ * The plan calls the markers tappable, and a tap has to open something that names
+ * the release. Carrying the headline here means the hit test can report what was
+ * tapped without a second lookup that could disagree with what was drawn.
+ */
+data class NewsFlag(
+    val index: Int,
+    val severity: FlagSeverity,
+    val headline: String,
+)

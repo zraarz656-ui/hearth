@@ -27,6 +27,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -75,12 +76,15 @@ fun MarketLibraryScreen(
     )
     val state by viewModel.state.collectAsStateWithLifecycle()
     val challengeStart by viewModel.challengeStart.collectAsStateWithLifecycle()
+    val blindMode by viewModel.blindMode.collectAsStateWithLifecycle()
 
     MarketLibraryContent(
         state = state,
         challengeStart = challengeStart,
+        blindMode = blindMode,
         onSelect = viewModel::selectDataset,
         onStartChallenge = viewModel::startChallenge,
+        onBlindModeChange = viewModel::setBlindMode,
         onConfirmAbandon = viewModel::confirmAbandon,
         onDismissChallengeStart = viewModel::dismissChallengeStart,
         modifier = modifier,
@@ -91,8 +95,10 @@ fun MarketLibraryScreen(
 private fun MarketLibraryContent(
     state: MarketLibraryState,
     challengeStart: ChallengeStartMessage?,
+    blindMode: Boolean,
     onSelect: (String) -> Unit,
     onStartChallenge: (String) -> Unit,
+    onBlindModeChange: (Boolean) -> Unit,
     onConfirmAbandon: (String) -> Unit,
     onDismissChallengeStart: () -> Unit,
     modifier: Modifier = Modifier,
@@ -152,6 +158,8 @@ private fun MarketLibraryContent(
                     item {
                         DatasetDetail(
                             dataset = selected,
+                            blindMode = blindMode,
+                            onBlindModeChange = onBlindModeChange,
                             onStartChallenge = { onStartChallenge(selected.datasetId) },
                         )
                     }
@@ -339,6 +347,8 @@ private fun DatasetRow(
 @Composable
 private fun DatasetDetail(
     dataset: DatasetSummary,
+    blindMode: Boolean,
+    onBlindModeChange: (Boolean) -> Unit,
     onStartChallenge: () -> Unit,
 ) {
     Surface(
@@ -383,6 +393,22 @@ private fun DatasetDetail(
                 MarketFormat.estimatedBytes(dataset.estimatedStorageBytes),
             )
             DetailRow(stringResource(R.string.market_detail_id), dataset.datasetId)
+
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.market_detail_blind_mode),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Text(
+                        text = stringResource(R.string.market_detail_blind_mode_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = blindMode, onCheckedChange = onBlindModeChange)
+            }
 
             Spacer(Modifier.height(12.dp))
             Button(

@@ -297,4 +297,48 @@ class PlayerMigrationTest {
         assertTrue("a second record for the same season must be refused", duplicate.isFailure)
         migrated.close()
     }
+
+    // ---------- Step 12.5: the blindMode migration ----------
+
+    @Test
+    fun `migrating 3 to 4 adds blindMode and defaults an existing season to visible`() {
+        // A populated v3 database, exactly as a pre-Phase-12 install would have:
+        // a season played with dates visible and no column to say so.
+        helper.createDatabase(PlayerDatabase.NAME, 3).use { db ->
+            db.execSQL(
+                """
+                INSERT INTO Season (
+                    seasonId, datasetId, mode, status, startingBalanceMicros,
+                    balanceMicros, equityMicros, peakEquityMicros, startedAtSimUtcMs,
+                    createdAtRealUtcMs, completedAtSimUtcMs, tradingDayCount,
+                    dailyStrikeCount, scorePoints, outcomeReason
+                ) VALUES (
+                    's1', 'ds_a', 'CHALLENGE', 'ACTIVE', 10000000000,
+                    9876543210, 9900000000, 10100000000, $t0,
+                    $t0, NULL, 3, 1, 250, NULL
+                )
+                """.trimIndent(),
+            )
+        }
+
+        // Runs MIGRATION_3_4 and validates the schema against app/schemas.
+        val migrated = helper.runMigrationsAndValidate(
+            PlayerDatabase.NAME,
+            4,
+            true,
+            *PlayerMigrations.ALL,
+        )
+
+        // The season survived, and `blindMode` is 0. That default is the point:
+        // a season created before the mode existed was played with dates visible,
+        // and retroactively calling it blind would change what the attempt was.
+        migrated.query("SELECT * FROM Season WHERE seasonId = 's1'").use { cursor ->
+            assertEquals(1, cursor.count)
+            cursor.moveToFirst()
+            assertEquals(0, cursor.getInt(cursor.getColumnIndexOrThrow("blindMode")))
+            assertEquals(3, cursor.getInt(cursor.getColumnIndexOrThrow("tradingDayCount")))
+            assertEquals(250, cursor.getInt(cursor.getColumnIndexOrThrow("scorePoints")))
+        }
+        migrated.close()
+    }
 }

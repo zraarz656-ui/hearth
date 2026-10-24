@@ -11,6 +11,13 @@ import com.tradequest.app.core.database.market.Candle1mEntity
 import com.tradequest.app.core.database.market.MarketDatabase
 import com.tradequest.app.core.database.market.MarketDatasetEntity
 import com.tradequest.app.core.database.market.RoomMarketRepository
+import com.tradequest.app.core.chart.renderer.FlagSeverity
+import com.tradequest.app.core.chart.renderer.NewsFlagHit
+import com.tradequest.app.core.market.MarketRepository
+import com.tradequest.app.core.market.NewsItem
+import com.tradequest.app.core.news.NewsRelease
+import com.tradequest.app.core.news.NewsReleaseProjection
+import com.tradequest.app.feature.news.NewsScheduleSource
 import com.tradequest.app.core.replay.InMemoryReplayStore
 import com.tradequest.app.core.risk.RiskLockBps
 import com.tradequest.app.core.trading.AccountState
@@ -19,6 +26,8 @@ import com.tradequest.app.core.trading.OrderSide
 import com.tradequest.app.core.trading.OrderType
 import com.tradequest.app.core.trading.TradingContext
 import com.tradequest.app.core.trading.TradingState
+import com.tradequest.app.core.simulation.warp.WarpPermission
+import com.tradequest.app.core.simulation.warp.WarpTarget
 import com.tradequest.app.ui.theme.ThemeMode
 import com.tradequest.app.ui.theme.chartStyleFor
 import kotlinx.coroutines.Dispatchers
@@ -216,7 +225,48 @@ class TradingViewModelTest {
         )
     }
 
-    private fun viewModel() = TradingViewModel(
+    /**
+     * A stand-in for the News feature's port (Steps 12.2-12.4).
+     *
+     * # Why this fakes the port and not the database
+     *
+     * The production implementation projects releases against the simulated instant,
+     * and that projection is already covered by `NewsReleaseProjectionTest`. What is
+     * *not* covered — and what this test exists for — is whether the Trading screen
+     * asks for the flags at all and wires what it gets into the frame. A fake lets
+     * the test state the releases directly and assert on the render state, without a
+     * second copy of the projection logic that could be wrong in the same way.
+     */
+    private class FakeNews(
+        var releases: List<NewsRelease> = emptyList(),
+        var blind: Boolean = false,
+    ) : NewsScheduleSource {
+        /** Records that the ViewModel actually asked, which is half the point. */
+        var requestedDatasetId: String? = null
+        var requestedSimUtcMs: Long? = null
+
+        override suspend fun releasesAt(
+            datasetId: String,
+            fromUtcMs: Long,
+            toUtcMs: Long,
+            simUtcMs: Long,
+        ): List<NewsRelease> {
+            requestedDatasetId = datasetId
+            requestedSimUtcMs = simUtcMs
+            return releases
+        }
+
+        override suspend fun activeDatasetId(): String? = requestedDatasetId
+        override fun currentSimUtcMs(): Long? = requestedSimUtcMs
+        override suspend fun isBlind(): Boolean = blind
+        override suspend fun datasetBounds(datasetId: String): Pair<Long, Long>? = null
+        override suspend fun warpPermission(): WarpPermission = WarpPermission.Allowed
+        override suspend fun resolveWarp(kind: com.tradequest.app.feature.news.WarpKind): WarpTarget? = null
+        override suspend fun performWarp(target: WarpTarget): Long? = null
+        override fun simInstants(): Flow<Long> = kotlinx.coroutines.flow.emptyFlow()
+    }
+
+    private fun viewModel(news: NewsScheduleSource? = null) = TradingViewModel(
         repository = marketRepository,
         style = chartStyleFor(ThemeMode.DARK),
         sessions = sessions,
@@ -224,6 +274,7 @@ class TradingViewModelTest {
         // the test scheduler cannot wait for and every assertion sees stale state.
         ioDispatcher = dispatcher,
         computeDispatcher = dispatcher,
+        newsSource = news,
     )
 
     private suspend fun readyState(vm: TradingViewModel): TradingState.Ready =
@@ -617,5 +668,245 @@ class TradingViewModelTest {
         // Nothing is drawn, so nothing can be grabbed. A touch must therefore be a
         // pan rather than a drag, which is what the false return tells the chart.
         assertTrue(!vm.grabOrderLine(tapPriceUnits = 2_050_000, toleranceUnits = 5_000))
+    }
+
+    // ---------------- Step 12.3: news flags reach the chart ----------------
+
+    /**
+     * A projected release on the charted dataset.
+     *
+     * Built through the real [NewsReleaseProjection] rather than as a literal
+     * `NewsRelease`, so the pre-release shape under test is the one production
+     * produces: a pending event with no actual field to leak.
+     */
+    private fun releaseAt(
+        datasetId: String,
+        atUtcMs: Long,
+        headline: String,
+        impact: String = "HIGH",
+        actual: String? = null,
+        simUtcMs: Long,
+    ): NewsRelease = NewsReleaseProjection.project(
+        NewsItem(
+            newsId = atUtcMs,
+            datasetId = datasetId,
+            publishedAtUtcMs = atUtcMs,
+            headline = headline,
+            body = "",
+            impact = impact,
+            actual = actual,
+        ),
+        simUtcMs = simUtcMs,
+    )
+
+    @Test
+    fun `the chart carries a flag for a scheduled release`() = runTest(dispatcher) {
+        // The gap this test closes: `NewsFlagMapper` was tested but nothing called
+        // it, so no flag ever reached the render state and the chart's flag layer was
+        // dead. This asserts the frame the screen actually receives.
+        insertDataset(minutes = 600)
+        sessions.season = null
+        sessions.simUtcMs = null
+
+        val at = t0 + 30 * minuteMs
+        val news = FakeNews(
+            releases = listOf(
+                releaseAt("ds_a", at, "US Non-Farm Payrolls", simUtcMs = t0),
+            ),
+        )
+
+        val vm = viewModel(news)
+        advanceUntilIdle()
+        val ready = readyState(vm)
+
+        assertEquals(
+            "the chart must ask the news port for its own dataset",
+            "ds_a",
+            news.requestedDatasetId,
+        )
+        val flag = ready.renderState.newsFlags.singleOrNull()
+        assertNotNull("the release must reach the chart as a flag", flag)
+        assertEquals("US Non-Farm Payrolls", flag!!.headline)
+        assertEquals(FlagSeverity.HIGH, flag.severity)
+        assertEquals(
+            "the flag must sit on the bar the release lands on",
+            ready.renderState.buffer.indexAtOrAfter(at),
+            flag.index,
+        )
+    }
+
+    @Test
+    fun `a medium impact release draws an amber flag`() = runTest(dispatcher) {
+        insertDataset(minutes = 600)
+        sessions.season = null
+        sessions.simUtcMs = null
+
+        val news = FakeNews(
+            releases = listOf(
+                releaseAt("ds_a", t0 + 30 * minuteMs, "Retail Sales", impact = "MEDIUM", simUtcMs = t0),
+            ),
+        )
+
+        val vm = viewModel(news)
+        advanceUntilIdle()
+        val flag = readyState(vm).renderState.newsFlags.single()
+        assertEquals(FlagSeverity.MEDIUM, flag.severity)
+    }
+
+    @Test
+    fun `a low impact release draws no flag`() = runTest(dispatcher) {
+        // The calendar flags only high and medium (Step 12.3), so a low-impact
+        // event must not appear as a marker at all.
+        insertDataset(minutes = 600)
+        sessions.season = null
+        sessions.simUtcMs = null
+
+        val news = FakeNews(
+            releases = listOf(
+                releaseAt("ds_a", t0 + 30 * minuteMs, "Minor Survey", impact = "LOW", simUtcMs = t0),
+            ),
+        )
+
+        val vm = viewModel(news)
+        advanceUntilIdle()
+        assertTrue(
+            "a low-impact release must not be flagged",
+            readyState(vm).renderState.newsFlags.isEmpty(),
+        )
+    }
+
+    @Test
+    fun `tapping a flag withholds an unreleased outcome`() = runTest(dispatcher) {
+        // Step 12.4 through the chart: the flag opens the release, and because it has
+        // not printed yet the dialog is handed no actual. This is the chart-side half
+        // of the rule the calendar already follows.
+        insertDataset(minutes = 600)
+        sessions.season = null
+        sessions.simUtcMs = null
+
+        val at = t0 + 30 * minuteMs
+        val news = FakeNews(
+            releases = listOf(
+                releaseAt("ds_a", at, "US Non-Farm Payrolls", actual = "250K", simUtcMs = t0),
+            ),
+        )
+
+        val vm = viewModel(news)
+        advanceUntilIdle()
+        val flag = readyState(vm).renderState.newsFlags.single()
+
+        vm.onNewsFlagTapped(NewsFlagHit(index = flag.index, headline = flag.headline))
+
+        val detail = vm.newsDetail.value
+        assertNotNull("the tap must open the release", detail)
+        assertEquals(false, detail!!.isReleased)
+        assertNull("an unreleased actual must not reach the dialog", detail.actual)
+    }
+
+    @Test
+    fun `tapping a flag on a printed release reveals the actual`() = runTest(dispatcher) {
+        insertDataset(minutes = 600)
+        sessions.season = null
+        sessions.simUtcMs = null
+
+        // Scheduled at the dataset's first minute, so at `simUtcMs == t0` it has
+        // already printed.
+        val news = FakeNews(
+            releases = listOf(
+                releaseAt("ds_a", t0, "US Non-Farm Payrolls", actual = "250K", simUtcMs = t0),
+            ),
+        )
+
+        val vm = viewModel(news)
+        advanceUntilIdle()
+        val flag = readyState(vm).renderState.newsFlags.single()
+
+        vm.onNewsFlagTapped(NewsFlagHit(index = flag.index, headline = flag.headline))
+
+        val detail = vm.newsDetail.value
+        assertNotNull("the tap must open the release", detail)
+        assertEquals(true, detail!!.isReleased)
+        assertEquals("250K", detail.actual)
+    }
+
+    @Test
+    fun `a tap that matches no flag opens nothing`() = runTest(dispatcher) {
+        // A stale tap — the chart scrolled, the dataset changed — must not open an
+        // unrelated event. The release is re-resolved by index and headline, and a
+        // miss is a no-op rather than a guess.
+        insertDataset(minutes = 600)
+        sessions.season = null
+        sessions.simUtcMs = null
+
+        val news = FakeNews(
+            releases = listOf(releaseAt("ds_a", t0 + 30 * minuteMs, "US Non-Farm Payrolls", simUtcMs = t0)),
+        )
+
+        val vm = viewModel(news)
+        advanceUntilIdle()
+
+        vm.onNewsFlagTapped(NewsFlagHit(index = 999_999, headline = "Something Else"))
+
+        assertNull("a hit matching no release must open nothing", vm.newsDetail.value)
+    }
+
+    @Test
+    fun `the detail can be dismissed`() = runTest(dispatcher) {
+        insertDataset(minutes = 600)
+        sessions.season = null
+        sessions.simUtcMs = null
+
+        val news = FakeNews(
+            releases = listOf(releaseAt("ds_a", t0, "US Non-Farm Payrolls", actual = "250K", simUtcMs = t0)),
+        )
+
+        val vm = viewModel(news)
+        advanceUntilIdle()
+        val flag = readyState(vm).renderState.newsFlags.single()
+        vm.onNewsFlagTapped(NewsFlagHit(index = flag.index, headline = flag.headline))
+        assertNotNull(vm.newsDetail.value)
+
+        vm.dismissNewsDetail()
+
+        assertNull("dismissing must close the detail", vm.newsDetail.value)
+    }
+
+    @Test
+    fun `without a news source the chart simply has no flags`() = runTest(dispatcher) {
+        // The Trading screen is usable with no news port — the chart still draws. A
+        // missing source must not fail the load.
+        insertDataset(minutes = 600)
+        sessions.season = null
+        sessions.simUtcMs = null
+
+        val vm = viewModel(news = null)
+        advanceUntilIdle()
+
+        val ready = readyState(vm)
+        assertTrue("no source means no flags", ready.renderState.newsFlags.isEmpty())
+    }
+
+    @Test
+    fun `blind mode hides the absolute date in the chart detail`() = runTest(dispatcher) {
+        // Step 12.5 through the chart's dialog: the row the chart opens must mask the
+        // date when the season is blind, exactly as the calendar does.
+        insertDataset(minutes = 600)
+        sessions.season = null
+        sessions.simUtcMs = null
+
+        val news = FakeNews(
+            releases = listOf(releaseAt("ds_a", t0, "US Non-Farm Payrolls", actual = "250K", simUtcMs = t0)),
+            blind = true,
+        )
+
+        val vm = viewModel(news)
+        advanceUntilIdle()
+        val flag = readyState(vm).renderState.newsFlags.single()
+        vm.onNewsFlagTapped(NewsFlagHit(index = flag.index, headline = flag.headline))
+
+        val detail = vm.newsDetail.value
+        assertNotNull(detail)
+        assertNull("Blind Mode must not show the absolute date", detail!!.absoluteDate)
+        assertNotNull("Blind Mode must show a relative coordinate", detail.blindCoordinate)
     }
 }

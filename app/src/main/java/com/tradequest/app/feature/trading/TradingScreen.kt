@@ -27,10 +27,14 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.tradequest.app.core.chart.renderer.ChartStyle
 import com.tradequest.app.core.chart.timeframe.Timeframe
 import com.tradequest.app.core.chart.viewport.ChartViewport
+import com.tradequest.app.core.chart.renderer.NewsFlagHit
 import com.tradequest.app.core.market.MarketRepository
 import com.tradequest.app.core.risk.RiskLockBps
 import com.tradequest.app.core.trading.ContractSpec
 import com.tradequest.app.core.trading.OrderSide
+import com.tradequest.app.feature.news.NewsEventRow
+import com.tradequest.app.feature.news.NewsReleaseDetailDialog
+import com.tradequest.app.feature.news.NewsScheduleSource
 import com.tradequest.app.ui.chart.CandlestickChart
 import com.tradequest.app.ui.theme.ThemeMode
 import com.tradequest.app.ui.theme.chartStyleFor
@@ -48,15 +52,23 @@ fun TradingScreen(
     sessionSource: TradingSessionSource,
     modifier: Modifier = Modifier,
     themeMode: ThemeMode = ThemeMode.DARK,
+    /**
+     * Where the chart's news flags come from (Steps 12.2-12.4).
+     *
+     * Passed in rather than read from a repository so the flags are projected
+     * releases: the screen cannot show an outcome the calendar would withhold.
+     */
+    newsSource: NewsScheduleSource? = null,
 ) {
     val style = chartStyleFor(themeMode)
     val viewModel: TradingViewModel = viewModel(
-        factory = TradingViewModel.factory(repository, style, sessionSource),
+        factory = TradingViewModel.factory(repository, style, sessionSource, newsSource),
     )
     val state by viewModel.state.collectAsStateWithLifecycle()
     val panel by viewModel.panel.collectAsStateWithLifecycle()
     val ticket by viewModel.ticket.collectAsStateWithLifecycle()
     val sheet by viewModel.sheet.collectAsStateWithLifecycle()
+    val newsDetail by viewModel.newsDetail.collectAsStateWithLifecycle()
 
     TradingContent(
         state = state,
@@ -79,8 +91,13 @@ fun TradingScreen(
         onOrderLineGrab = viewModel::grabOrderLine,
         onOrderLineDrag = viewModel::dragGrabbedLine,
         onOrderLineRelease = viewModel::releaseGrabbedLine,
+        onNewsFlagTap = viewModel::onNewsFlagTapped,
         modifier = modifier,
     )
+
+    newsDetail?.let { row ->
+        NewsReleaseDetailDialog(row = row, onDismiss = viewModel::dismissNewsDetail)
+    }
 }
 
 @Composable
@@ -105,6 +122,7 @@ private fun TradingContent(
     onOrderLineGrab: (Int, Int) -> Boolean,
     onOrderLineDrag: (Int) -> Unit,
     onOrderLineRelease: () -> Unit,
+    onNewsFlagTap: (NewsFlagHit) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -135,6 +153,7 @@ private fun TradingContent(
                         onOrderLineGrab = onOrderLineGrab,
                         onOrderLineDrag = onOrderLineDrag,
                         onOrderLineRelease = onOrderLineRelease,
+                        onNewsFlagTap = onNewsFlagTap,
                         modifier = Modifier
                             .fillMaxWidth()
                             .fillMaxSize()

@@ -74,5 +74,6 @@ interface ChallengeLauncher {
     suspend fun startChallenge(
         datasetId: String,
         confirmAbandon: Boolean = false,
+        blindMode: Boolean = false,
     ): ChallengeLaunchResult
 }

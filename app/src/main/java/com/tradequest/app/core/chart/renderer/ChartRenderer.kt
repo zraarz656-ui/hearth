@@ -86,6 +86,9 @@ class ChartRenderer(
         // invisible exactly when price is near it, which is when it matters.
         drawTradeOverlays(state, transformer, plotWidthPx)
         drawTradeMarkers(state, transformer, bufferWindow)
+        // Above the markers: a flag marks the bar, and the price annotations on it
+        // should not be able to cover the flag that says a release happened.
+        drawNewsFlags(state, transformer, bufferWindow, plotHeightPx)
         drawPriceAxis(state, transformer, plotWidthPx, priceAxisWidthPx)
         drawTimeAxis(state, transformer, plotWidthPx, timeAxisHeightPx, bufferWindow)
         drawCurrentPriceLine(state, transformer, plotWidthPx, priceAxisWidthPx)
@@ -821,6 +824,75 @@ class ChartRenderer(
         }
     }
 
+    /**
+     * Draws a flag above the bar where each news release lands (Steps 12.3, 12.4).
+     *
+     * # Why the flag sits at the top of the plot
+     *
+     * A flag pinned to a price would collide with the candles, and the plan gives a
+     * flag no price — it marks *when*, not *where*. Drawing it in a fixed strip
+     * along the top keeps it legible regardless of the price range, and keeps every
+     * flag on the same line so a row of them reads as a calendar.
+     *
+     * # Why the headline is not drawn
+     *
+     * A minute-resolution chart can hold several releases within a few bars, and
+     * full headlines would overlap into an unreadable smear. The flag is a marker;
+     * tapping it opens the detail, which is where the headline belongs. The
+     * headline is carried on [NewsFlag] so the hit test can report it.
+     */
+    private fun DrawScope.drawNewsFlags(
+        state: ChartRenderState,
+        transformer: ChartCoordinateTransformer,
+        bufferWindow: IntRange,
+        plotHeightPx: Float,
+    ) {
+        if (state.newsFlags.isEmpty()) return
+        val style = state.style
+        val topY = NEWS_FLAG_TOP_PX
+
+        for (flag in state.newsFlags) {
+            if (bufferWindow.isEmpty() || flag.index !in bufferWindow) continue
+            val x = transformer.xOfIndex(flag.index.toFloat())
+            if (x < 0f || x > transformer.plotWidthPx) continue
+            val colour = when (flag.severity) {
+                FlagSeverity.HIGH -> style.newsFlagHigh
+                FlagSeverity.MEDIUM -> style.newsFlagMedium
+            }
+            drawNewsFlag(x = x, topY = topY, color = colour)
+            // A hairline down to the bar so the flag can be tied to its candle.
+            drawLine(
+                color = colour.copy(alpha = NEWS_FLAG_STEM_ALPHA),
+                start = androidx.compose.ui.geometry.Offset(x, topY + NEWS_FLAG_SIZE_PX),
+                end = androidx.compose.ui.geometry.Offset(x, plotHeightPx),
+                strokeWidth = 1f,
+            )
+        }
+    }
+
+    /**
+     * A small pennant: a vertical staff with a triangular flag to its right.
+     *
+     * The flag points right so it does not cover the bar it marks, and so a run of
+     * adjacent flags reads left-to-right like a timeline.
+     */
+    private fun DrawScope.drawNewsFlag(x: Float, topY: Float, color: Color) {
+        val size = NEWS_FLAG_SIZE_PX
+        val path = androidx.compose.ui.graphics.Path().apply {
+            moveTo(x, topY)
+            lineTo(x + size, topY + size / 2f)
+            lineTo(x, topY + size)
+            close()
+        }
+        drawPath(path = path, color = color)
+        drawLine(
+            color = color,
+            start = androidx.compose.ui.geometry.Offset(x, topY),
+            end = androidx.compose.ui.geometry.Offset(x, topY + size * 1.4f),
+            strokeWidth = NEWS_FLAG_STAFF_WIDTH_PX,
+        )
+    }
+
     /** A small triangle at ([x], [y]) pointing up or down. */
     private fun DrawScope.drawMarkerArrow(
         x: Float,
@@ -857,5 +929,19 @@ class ChartRenderer(
         const val MARKER_SIZE_PX: Float = 12f
         /** Gap between the marker's point and the price level, in pixels. */
         const val MARKER_GAP_PX: Float = 3f
+        /**
+         * Distance from the top of the plot to the news flag strip, in pixels.
+         *
+         * Read from [NewsFlagHitTester] rather than declared here: the hit test that
+         * decides which flag a finger tapped has to use the same strip, and two
+         * independent constants would let a drawn flag and its tap target drift apart.
+         */
+        const val NEWS_FLAG_TOP_PX: Float = NewsFlagHitTester.STRIP_TOP_PX
+        /** Edge length of a news flag pennant, in pixels. */
+        const val NEWS_FLAG_SIZE_PX: Float = NewsFlagHitTester.STRIP_HEIGHT_PX
+        /** Stroke width of a news flag's staff, in pixels. */
+        const val NEWS_FLAG_STAFF_WIDTH_PX: Float = 1.5f
+        /** Opacity of the hairline tying a flag to its bar. */
+        const val NEWS_FLAG_STEM_ALPHA: Float = 0.25f
     }
 }

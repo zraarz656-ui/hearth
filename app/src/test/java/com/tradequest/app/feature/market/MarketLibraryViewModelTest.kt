@@ -87,15 +87,20 @@ class MarketLibraryViewModelTest {
         var result: ChallengeLaunchResult = ChallengeLaunchResult.Started("s1", "A"),
         var failure: Exception? = null,
     ) : ChallengeLauncher {
-        data class Call(val datasetId: String, val confirmAbandon: Boolean)
+        data class Call(
+            val datasetId: String,
+            val confirmAbandon: Boolean,
+            val blindMode: Boolean,
+        )
 
         val calls = mutableListOf<Call>()
 
         override suspend fun startChallenge(
             datasetId: String,
             confirmAbandon: Boolean,
+            blindMode: Boolean,
         ): ChallengeLaunchResult {
-            calls += Call(datasetId, confirmAbandon)
+            calls += Call(datasetId, confirmAbandon, blindMode)
             failure?.let { throw it }
             return result
         }
@@ -189,7 +194,7 @@ class MarketLibraryViewModelTest {
             advanceUntilIdle()
 
             assertEquals(
-                listOf(RecordingLauncher.Call("ds_a", confirmAbandon = false)),
+                listOf(RecordingLauncher.Call("ds_a", confirmAbandon = false, blindMode = false)),
                 launcher.calls,
             )
         }
@@ -225,7 +230,7 @@ class MarketLibraryViewModelTest {
         advanceUntilIdle()
 
         assertEquals(
-            listOf(RecordingLauncher.Call("ds_b", confirmAbandon = true)),
+            listOf(RecordingLauncher.Call("ds_b", confirmAbandon = true, blindMode = false)),
             launcher.calls,
         )
         assertTrue(viewModel.challengeStart.value is ChallengeStartMessage.Started)

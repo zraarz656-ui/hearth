@@ -73,6 +73,24 @@ data class ChartRenderState(
      * bracket is a set of price levels spanning the plot.
      */
     val markers: List<TradeMarker> = emptyList(),
+    /**
+     * News flags drawn along the top of the plot (Steps 12.2-12.4).
+     *
+     * # Why a flag for an upcoming release is not a leak
+     *
+     * Steps 12.2 and 12.4 are explicit that a *scheduled* event is visible before
+     * it happens — the calendar shows it, and the pre-release view shows its name,
+     * time, forecast and previous reading. What must never be visible is the
+     * outcome: the actual and the reaction note. A flag says only "a high-impact
+     * release lands on this bar", which is information a real trader has from a
+     * calendar and which the plan intends the player to have.
+     *
+     * The feature layer therefore builds flags for every event in the visible
+     * window, past or future, and the flag's [NewsFlag.headline] is the same
+     * headline the pre-release view would show. Nothing here can carry an actual,
+     * because [NewsFlag] has no field for one.
+     */
+    val newsFlags: List<NewsFlag> = emptyList(),
 ) {
     /**
      * Total bars the x-axis must place: revealed candles plus the forming one.

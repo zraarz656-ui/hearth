@@ -8,6 +8,7 @@ import com.tradequest.app.core.chart.coordinates.PriceAxisRange
 import com.tradequest.app.core.chart.renderer.ChartFrameAssembler
 import com.tradequest.app.core.chart.renderer.ChartRenderState
 import com.tradequest.app.core.chart.renderer.ChartStyle
+import com.tradequest.app.core.chart.renderer.NewsFlagHit
 import com.tradequest.app.core.chart.renderer.OverlayLineHit
 import com.tradequest.app.core.chart.renderer.OverlayLineHitTester
 import com.tradequest.app.core.chart.renderer.OverlayLineKind
@@ -17,6 +18,7 @@ import com.tradequest.app.core.chart.viewport.ChartViewport
 import com.tradequest.app.core.market.DatasetSummary
 import com.tradequest.app.core.market.HistoricalCandle
 import com.tradequest.app.core.market.MarketRepository
+import com.tradequest.app.core.news.NewsRelease
 import com.tradequest.app.core.accounting.CommissionSchedule
 import com.tradequest.app.core.risk.RiskLock
 import com.tradequest.app.core.risk.RiskLockBps
@@ -36,6 +38,10 @@ import com.tradequest.app.core.trading.TradeDirection
 import com.tradequest.app.core.trading.TradeOverlay
 import com.tradequest.app.core.trading.TradingCommand
 import com.tradequest.app.core.trading.TradingEvent
+import com.tradequest.app.feature.news.NewsEventRow
+import com.tradequest.app.feature.news.NewsFlagMapper
+import com.tradequest.app.feature.news.NewsScheduleSource
+import com.tradequest.app.feature.news.toRow
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -113,6 +119,16 @@ class TradingViewModel(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     /** Where aggregation runs. Injected for the same reason as [ioDispatcher]. */
     private val computeDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    /**
+     * Where the chart's news flags come from (Steps 12.2-12.4).
+     *
+     * The News feature's port, not `MarketRepository`, for the same reason the News
+     * screen uses it: the flags must be *projected* releases, so an unreleased event
+     * cannot carry its outcome onto the chart. Handing this ViewModel the repository
+     * would let it read raw events and decide visibility itself, which is the one
+     * decision the projection exists to centralise.
+     */
+    private val newsSource: NewsScheduleSource? = null,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<TradingState>(TradingState.Loading)
@@ -198,6 +214,43 @@ class TradingViewModel(
      * affect trading.
      */
     val challenge: StateFlow<ChallengeDashboardState?> = _challenge.asStateFlow()
+
+    /**
+     * The release a tapped flag opened, or null when no detail is showing
+     * (Step 12.4).
+     *
+     * A [NewsEventRow] rather than a [NewsRelease], so the dialog is built from the
+     * same projection the calendar shows. The row already has the outcome withheld
+     * when it is not yet visible, so the chart cannot reveal more than the calendar.
+     */
+    private val _newsDetail = MutableStateFlow<NewsEventRow?>(null)
+    val newsDetail: StateFlow<NewsEventRow?> = _newsDetail.asStateFlow()
+
+    /**
+     * The projected releases for the charted dataset, held so a tap can resolve a
+     * flag to its release.
+     *
+     * The flag itself carries only a bar index and a headline — enough to draw and
+     * to name, but not the release. Keeping the projection here means the tap is
+     * resolved against the very list the flags were built from, so a tapped flag
+     * cannot name a different event than the one drawn.
+     */
+    private var newsReleases: List<NewsRelease> = emptyList()
+
+    /** The origin of the blind clock: the dataset's first minute (Step 12.5). */
+    private var newsSeasonStartUtcMs: Long? = null
+
+    /** Whether the running season hides absolute dates (Step 12.5). */
+    private var newsBlind: Boolean = false
+
+    /**
+     * The charted dataset's time bounds, cached from the load.
+     *
+     * Held so a re-projection does not re-query them: the clock crosses a bucket
+     * boundary once per bar, and the bounds of a dataset never change, so asking
+     * the database each time would be a read per bar for an answer already known.
+     */
+    private var newsBounds: Pair<Long, Long>? = null
 
     init {
         viewModelScope.launch { load() }
@@ -350,7 +403,79 @@ class TradingViewModel(
         }
         candles = loaded
         window = MarketPathWindow(summary.datasetId, MarketPathBuilder.build(summary.datasetId, loaded))
+        loadNewsReleases(summary.datasetId, bounds)
         publish(summary)
+    }
+
+    /**
+     * Reads the dataset's releases, projected as known at the current instant
+     * (Steps 12.2-12.4).
+     *
+     * # Why the whole dataset, not the visible window
+     *
+     * The chart can be panned anywhere in the series, and the flags are filtered to
+     * the visible bars at draw time. Reading only the opening window would leave the
+     * chart flagless the moment the trader scrolled, and re-reading on every pan
+     * would be a query per gesture. One read of the schedule is bounded by the
+     * dataset and is what the mapper is built to take.
+     *
+     * # Why a failure is not fatal
+     *
+     * A chart without news flags is still a usable chart. A failed read leaves the
+     * list empty and the trading screen working, rather than failing the whole
+     * screen over a decoration.
+     */
+    private suspend fun loadNewsReleases(datasetId: String, bounds: Pair<Long, Long>) {
+        newsBounds = bounds
+        val source = newsSource ?: return
+        newsSeasonStartUtcMs = bounds.first
+        newsBlind = try {
+            source.isBlind()
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            false
+        }
+        newsReleases = try {
+            source.releasesAt(
+                datasetId = datasetId,
+                fromUtcMs = bounds.first,
+                toUtcMs = bounds.second + ONE_MINUTE_MS,
+                simUtcMs = sessions.currentSimUtcMs() ?: bounds.first,
+            )
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            emptyList()
+        }
+    }
+
+    /**
+     * Re-projects the releases against a new simulated instant (Step 12.4).
+     *
+     * Called when the clock crosses a bucket boundary, so an event that has just
+     * been released is re-projected and a tap on its flag shows the actual. The
+     * flags themselves do not change — a scheduled event is on the chart before and
+     * after it prints — so this does not republish a frame; it only refreshes what a
+     * tap would reveal.
+     */
+    private suspend fun refreshNewsProjection(simUtcMs: Long) {
+        val source = newsSource ?: return
+        if (newsReleases.isEmpty()) return
+        val datasetId = dataset?.datasetId ?: return
+        val bounds = newsBounds ?: return
+        newsReleases = try {
+            source.releasesAt(
+                datasetId = datasetId,
+                fromUtcMs = bounds.first,
+                toUtcMs = bounds.second + ONE_MINUTE_MS,
+                simUtcMs = simUtcMs,
+            )
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            newsReleases
+        }
     }
 
     /**
@@ -391,6 +516,10 @@ class TradingViewModel(
 
         if (bucketStart != lastBucketStart) {
             lastBucketStart = bucketStart
+            // Re-project against the new instant so an event that has just printed
+            // reveals its actual to a tap (Step 12.4). The flags drawn do not change,
+            // so this does not republish the frame.
+            refreshNewsProjection(simMs)
             publish(summary)
             return
         }
@@ -540,7 +669,11 @@ class TradingViewModel(
      * stays a pure geometry function and its tests stay about geometry.
      */
     private fun ChartRenderState.withTradingOverlays(): ChartRenderState {
-        val session = liveSession ?: return this
+        // The flags are attached before the session check, because a purely
+        // historical chart — no season running — still shows when releases happened.
+        // They carry no outcome, so there is nothing to withhold (Steps 12.2-12.4).
+        val flags = NewsFlagMapper.flags(newsReleases, buffer)
+        val session = liveSession ?: return copy(newsFlags = flags)
         val panelState = _panel.value
         return copy(
             overlays = TradeOverlayMapper.groups(
@@ -554,6 +687,7 @@ class TradingViewModel(
             // a pixel in that buffer. Resolving against the minutes would put every
             // arrow on the wrong bar on any timeframe above M1.
             markers = TradeOverlayMapper.markers(panelState.closedTrades, buffer),
+            newsFlags = flags,
         )
     }
 
@@ -993,6 +1127,38 @@ class TradingViewModel(
         return plan.revealed.size
     }
 
+    // ================= Phase 12: news flags on the chart =================
+
+    /**
+     * Opens the release behind a tapped flag (Steps 12.3, 12.4).
+     *
+     * # Why the release is re-resolved rather than carried on the hit
+     *
+     * A [NewsFlagHit] names a bar and a headline — deliberately, because the chart
+     * must not know what a release is. The release is found by the pair, so a flag
+     * whose event has since been re-projected still opens the right one, and a hit
+     * that matches nothing (a stale tap after a dataset switch) opens nothing rather
+     * than the wrong event.
+     */
+    fun onNewsFlagTapped(hit: NewsFlagHit) {
+        val buffer = (_state.value as? TradingState.Ready)?.renderState?.buffer ?: return
+        val release = newsReleases.firstOrNull { candidate ->
+            candidate.headline == hit.headline &&
+                buffer.indexAtOrAfter(candidate.scheduledUtcMs) == hit.index
+        } ?: return
+        val seasonStart = newsSeasonStartUtcMs ?: return
+        _newsDetail.value = release.toRow(
+            simUtcMs = sessions.currentSimUtcMs() ?: seasonStart,
+            seasonStartUtcMs = seasonStart,
+            blind = newsBlind,
+        )
+    }
+
+    /** Closes the release detail. */
+    fun dismissNewsDetail() {
+        _newsDetail.value = null
+    }
+
     companion object {
         private const val ONE_MINUTE_MS: Long = 60_000L
 
@@ -1003,11 +1169,12 @@ class TradingViewModel(
             repository: MarketRepository,
             style: ChartStyle,
             sessions: TradingSessionSource,
+            newsSource: NewsScheduleSource? = null,
         ): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                    TradingViewModel(repository, style, sessions) as T
+                    TradingViewModel(repository, style, sessions, newsSource = newsSource) as T
             }
     }
 }

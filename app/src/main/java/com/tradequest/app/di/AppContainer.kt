@@ -20,6 +20,9 @@ import com.tradequest.app.core.database.player.RoomClockStore
 import com.tradequest.app.core.database.player.RoomReplayStore
 import com.tradequest.app.core.database.player.SeasonStartResult
 import com.tradequest.app.core.market.MarketRepository
+import com.tradequest.app.core.news.NewsImpact
+import com.tradequest.app.core.news.NewsRelease
+import com.tradequest.app.core.news.NewsReleaseProjection
 import com.tradequest.app.core.replay.ReplayCoordinator
 import com.tradequest.app.core.replay.ReplayNotifier
 import com.tradequest.app.core.replay.ReplayProcessor
@@ -33,9 +36,14 @@ import com.tradequest.app.core.simulation.clock.DatasetBoundsResolver
 import com.tradequest.app.core.simulation.clock.SimulationClock
 import com.tradequest.app.core.simulation.clock.SystemMonotonicClock
 import com.tradequest.app.core.simulation.clock.SystemWallClock
+import com.tradequest.app.core.simulation.warp.TimeWarpResolver
+import com.tradequest.app.core.simulation.warp.WarpPermission
+import com.tradequest.app.core.simulation.warp.WarpTarget
 import com.tradequest.app.core.trading.AccountState
 import com.tradequest.app.core.trading.TradingContext
 import com.tradequest.app.core.trading.TradingState
+import com.tradequest.app.feature.news.NewsScheduleSource
+import com.tradequest.app.feature.news.WarpKind
 import com.tradequest.app.feature.trading.LiveTradingSession
 import com.tradequest.app.feature.trading.SeasonBinding
 import com.tradequest.app.feature.challenge.ChallengeOverviewSource
@@ -248,6 +256,123 @@ class AppContainer(
     }
 
     /**
+     * The News calendar's view of the schedule, the clock and the warp rules
+     * (Steps 12.2-12.7).
+     *
+     * # Why the projection happens here
+     *
+     * [NewsScheduleSource.releasesAt] returns already-projected [NewsRelease]
+     * values. `NewsReleaseProjection.project` is the single place that decides
+     * what an event reveals at a simulated instant (Step 12.4), and it lives on
+     * the domain side of the boundary, so a screen that never receives an actual
+     * cannot leak one. The screen is handed the *projected* event, not the raw
+     * `NewsItem` plus an instruction to hide a field.
+     *
+     * # Why the warp processes the interval here
+     *
+     * Step 12.7 requires every intervening market and trading event to be handled
+     * during a warp, which is exactly what the app's catch-up path already does:
+     * seek the clock to the destination and let the replay processor walk from
+     * its committed cursor to the new instant. Reusing [catchUpActiveSeason]
+     * rather than advancing the clock alone is what makes a warp and a resume the
+     * same operation, so a position carried across the jump is priced and settled
+     * by the same engine.
+     */
+    val newsScheduleSource: NewsScheduleSource by lazy {
+        object : NewsScheduleSource {
+            override suspend fun releasesAt(
+                datasetId: String,
+                fromUtcMs: Long,
+                toUtcMs: Long,
+                simUtcMs: Long,
+            ): List<NewsRelease> {
+                val items = marketRepository.newsInRange(
+                    datasetId = datasetId,
+                    fromUtcMs = fromUtcMs,
+                    toUtcMs = toUtcMs,
+                )
+                return NewsReleaseProjection.projectAll(items, simUtcMs)
+            }
+
+            override suspend fun activeDatasetId(): String? =
+                playerRepository.activeSeason()?.datasetId
+
+            override fun currentSimUtcMs(): Long? {
+                if (!simulationClock.isAttached) return null
+                return simulationClock.currentSimUtcMs()
+            }
+
+            override suspend fun isBlind(): Boolean =
+                playerRepository.activeSeason()?.blindMode == true
+
+            override suspend fun datasetBounds(datasetId: String): Pair<Long, Long>? =
+                marketRepository.timeBounds(datasetId)
+
+            override suspend fun warpPermission(): WarpPermission {
+                val season = playerRepository.activeSeason()
+                    ?: return WarpPermission.Allowed
+                // The counts come from a freshly-opened session rather than a
+                // snapshot, so a position opened since the screen loaded is seen.
+                val session = tradingSessionSource.createLiveSession()
+                session?.open()
+                return WarpPermission.evaluate(
+                    mode = RoomClockStore.clockModeOf(season.mode),
+                    openPositionCount = session?.openPositions()?.size ?: 0,
+                    pendingOrderCount = session?.pendingOrders()?.size ?: 0,
+                )
+            }
+
+            override suspend fun resolveWarp(kind: WarpKind): WarpTarget? {
+                val season = playerRepository.activeSeason() ?: return null
+                val bounds = DatasetBoundsResolver.resolve(marketRepository, season.datasetId)
+                    ?: return null
+                val now = currentSimUtcMs() ?: bounds.startSimUtcMs
+                // The resolver's probe is a plain lambda, not a suspend one, so the
+                // high-impact schedule is read once here and searched in memory.
+                // Re-querying per probe would also be the wrong shape: the resolver
+                // may probe many times and the schedule does not change mid-warp.
+                val highImpactTimes = highImpactReleaseTimes(season.datasetId, bounds)
+                val resolver = TimeWarpResolver(
+                    bounds = bounds,
+                    nextHighImpactAtOrAfter = { after ->
+                        highImpactTimes.firstOrNull { it >= after }
+                    },
+                )
+                return when (kind) {
+                    WarpKind.SKIP_WEEKEND -> resolver.nextMarketOpen(now)
+                    WarpKind.NEXT_LONDON -> resolver.nextLondonOpen(now)
+                    WarpKind.NEXT_NEW_YORK -> resolver.nextNewYorkOpen(now)
+                    WarpKind.NEXT_HIGH_IMPACT_NEWS -> resolver.nextHighImpactNews(now)
+                }
+            }
+
+            override suspend fun performWarp(target: WarpTarget): Long? {
+                val destination = target.atUtcMs ?: return null
+                if (!simulationClock.isAttached) return null
+                simulationClock.seekTo(destination)
+                // Process everything between the old instant and the destination,
+                // so positions, stops and margin events across the jump are real.
+                catchUpActiveSeason()
+                return simulationClock.currentSimUtcMs()
+            }
+
+            override fun simInstants(): Flow<Long> = flow {
+                var last: Long? = null
+                while (true) {
+                    val now = currentSimUtcMs()
+                    if (now == null) {
+                        if (last != null) return@flow
+                    } else if (now != last) {
+                        last = now
+                        emit(now)
+                    }
+                    delay(CHART_TICK_INTERVAL_MS)
+                }
+            }
+        }
+    }
+
+    /**
      * Catches the active season up to wherever the simulation clock now stands
      * (Steps 7.7-7.8).
      *
@@ -396,6 +521,7 @@ class AppContainer(
             override suspend fun startChallenge(
                 datasetId: String,
                 confirmAbandon: Boolean,
+                blindMode: Boolean,
             ): ChallengeLaunchResult {
                 val bounds = DatasetBoundsResolver.resolve(marketRepository, datasetId)
                     ?: return if (marketRepository.getDataset(datasetId) == null) {
@@ -412,6 +538,7 @@ class AppContainer(
                     startedAtSimUtcMs = bounds.startSimUtcMs,
                     createdAtRealUtcMs = SystemWallClock.nowUtcMs(),
                     confirmAbandon = confirmAbandon,
+                    blindMode = blindMode,
                 )
 
                 return when (result) {
@@ -429,6 +556,28 @@ class AppContainer(
             }
         }
     }
+
+    /**
+     * The scheduled instants of every high-impact release in [bounds], ascending.
+     *
+     * Read once per warp resolution rather than per probe: `TimeWarpResolver`'s
+     * probe is a plain lambda and may be called many times, while the schedule is
+     * fixed for the dataset. Impact is matched through [NewsImpact.fromStored] so
+     * the same tolerant parsing the calendar uses also decides what Time Warp
+     * treats as high-impact; a second spelling table here could disagree with it.
+     */
+    private suspend fun highImpactReleaseTimes(
+        datasetId: String,
+        bounds: DatasetBounds,
+    ): List<Long> =
+        marketRepository.newsInRange(
+            datasetId = datasetId,
+            fromUtcMs = bounds.startSimUtcMs,
+            toUtcMs = bounds.endSimUtcMs + ONE_MINUTE_MS,
+        )
+            .filter { NewsImpact.fromStored(it.impact) == NewsImpact.HIGH }
+            .map { it.publishedAtUtcMs }
+            .sorted()
 
     /**
      * Binds the clock to a season, if it is not already bound to that season.

@@ -97,6 +97,12 @@ data class ChartStyle(
     /** Colour of an exit marker arrow (Step 10.8). */
     val markerExit: Color = Color(0xFF9E9E9E),
 
+    /** Colour of a high-impact news flag (Step 12.3). Red, as the plan specifies. */
+    val newsFlagHigh: Color = Color(0xFFE53935),
+
+    /** Colour of a medium-impact news flag (Step 12.3). Amber, as the plan specifies. */
+    val newsFlagMedium: Color = Color(0xFFFFB300),
+
     /**
      * Half-height of a draggable line's grab handle, in pixels.
      *

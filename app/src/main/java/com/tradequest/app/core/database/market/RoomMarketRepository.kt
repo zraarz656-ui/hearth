@@ -109,6 +109,9 @@ class RoomMarketRepository(
 
     override suspend fun newsCount(datasetId: String): Int = dao.countNews(datasetId)
 
+    override suspend fun nextHighImpactNews(datasetId: String, afterUtcMs: Long): NewsItem? =
+        dao.highImpactNewsFrom(datasetId, afterUtcMs, limit = 1).firstOrNull()?.toDomain()
+
     override suspend fun closures(datasetId: String): List<DatasetClosure> =
         dao.closuresFor(datasetId).map { it.toDomain() }
 
@@ -187,7 +190,13 @@ class RoomMarketRepository(
                         publishedAtUtcMs = n.publishedAtUtcMs,
                         headline = n.headline,
                         body = n.body,
+                        category = n.category,
                         impact = n.impact,
+                        forecast = n.forecast,
+                        previous = n.previous,
+                        actual = n.actual,
+                        reactionNote = n.reactionNote,
+                        reactionWindowMinutes = n.reactionWindowMinutes,
                     )
                 },
             )
@@ -225,12 +234,18 @@ data class ImportRequest(
     val importedAtUtcMs: Long,
 )
 
-/** News supplied with an import, before it has a database id. */
+/** News supplied with an import, before it has a database id (Steps 2.4, 12.1). */
 data class PendingNews(
     val publishedAtUtcMs: Long,
     val headline: String,
-    val body: String,
+    val body: String = "",
     val impact: String,
+    val category: String = "OTHER",
+    val forecast: String? = null,
+    val previous: String? = null,
+    val actual: String? = null,
+    val reactionNote: String? = null,
+    val reactionWindowMinutes: Int = 0,
 )
 
 sealed interface ImportOutcome {

@@ -75,6 +75,7 @@ private fun TradeQuestApp(container: AppContainer) {
                 challengeLauncher = container.challengeLauncher,
                 sessionSource = container.tradingSessionSource,
                 challengeSource = container.challengeOverviewSource,
+                newsScheduleSource = container.newsScheduleSource,
                 modifier = Modifier.padding(padding),
             )
         }

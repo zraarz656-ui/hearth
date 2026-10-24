@@ -1934,3 +1934,237 @@ the real-time advance.
 Verified on the current tree: 17 passed, 0 failed, with sane figures — a 0.10-lot
 buy held six minutes realises $56.30, the score is 41 (TRADER), the profit target
 is $11,500 and the loss floor $9,000, matching `ChallengeRules.STANDARD`.
+
+## Phase 12 — Historical news, Blind Mode and Time Warp — COMPLETE
+
+Add realistic historical catalysts and flexible replay: an economic calendar whose
+future outcomes cannot leak, news flags on the chart, a blind clock that hides the
+date, and a deterministic Time Warp.
+
+### Implemented
+
+- **News models (12.1).** `NewsRelease` is a sealed interface with two shapes.
+  `Released` carries `actual`; `Pending` has no such field, so a pre-release event
+  cannot leak its outcome by accident — code that wants the value cannot compile
+  against a `Pending`. `NewsCategory` and `NewsImpact` parse from their stored
+  strings. The six calendar columns are added to `NewsEvent` by an additive
+  migration; `body` is kept so the migration never rebuilds the table.
+- **The projection seam (12.2, 12.4).** `NewsReleaseProjection.project` is the
+  single place that decides visibility, and it takes the *simulated* instant, never
+  the wall clock, so a replay reveals the same things on every run. Before the
+  release it yields a `Pending` with the name, time, forecast and previous; after,
+  a `Released` with the actual. The reaction note is withheld until its own price
+  window has elapsed (`reactionWindowMinutes`, per event, because a rate decision
+  moves the market for longer than a minor survey).
+- **The calendar (12.2).** `NewsScreen` lists the schedule and opens a detail on
+  tap. Before a release it shows the fields that exist and says explicitly that the
+  actual is not out yet — an empty field would read as "no data", which is a
+  different thing.
+- **News flags on the chart (12.3).** `NewsFlagMapper` projects releases to flags
+  (red high impact, amber medium); `ChartRenderer` draws the strip and
+  `NewsFlagHitTester` owns the strip geometry and the hit test, so the drawn flag
+  and the tap target cannot drift apart. Tapping a flag opens the same detail the
+  calendar uses.
+- **Blind Mode (12.5).** `BlindClock` renders `W2 D3 14:30` — a week ordinal, a
+  trading-day ordinal and the time of day. The weekday is kept (session behaviour
+  depends on it); the absolute date, the dataset identity and campaign names are
+  not shown. The origin is the *season*, not the dataset: anchoring to the dataset
+  would leak how much of it has been consumed.
+- **Time Warp (12.6).** `TimeWarpResolver` resolves skip-weekend and next-London /
+  next-New York / next-high-impact-news targets. The news target is T-5m, not the
+  release, so the player arrives with time to position; if T-5m is already past, it
+  resolves to the next event rather than backwards.
+- **Challenge restrictions (12.7).** `WarpPermission` refuses a warp in Challenge
+  Mode while any position is open or order is pending, and returns *why* (counts of
+  each) so the UI can name the blocker rather than re-derive it. Practice Mode
+  always allows the warp, and the intervening market and trading events are
+  processed either way.
+- **Wiring.** `NewsScheduleSource` is the port the News feature depends on; the
+  composition root supplies it from the repository, the clock and the challenge
+  state, so the feature never reaches into `core/database` (rule 4). The trading
+  feature takes the same port so the chart's flags and the calendar project through
+  one implementation. `TradingViewModel` loads the schedule once per dataset and
+  re-projects at each bar boundary.
+
+### Files created
+
+- `core/news/NewsRelease.kt`, `NewsCategory.kt`, `NewsImpact.kt`
+- `core/challenge/BlindMode.kt`
+- `core/simulation/warp/TimeWarpResolver.kt`, `WarpPermission.kt`
+- `core/chart/renderer/NewsFlagHitTester.kt`
+- `core/database/market/MarketMigrations.kt`
+- `feature/news/NewsScheduleSource.kt`, `NewsViewModel.kt`, `NewsFlagMapper.kt`
+- Tests: `core/news/NewsReleaseProjectionTest.kt`, `core/challenge/BlindModeTest.kt`,
+  `core/simulation/warp/TimeWarpResolverTest.kt`,
+  `feature/news/NewsFlagMapperTest.kt` (also holds `NewsFlagHitTesterTest`),
+  `core/database/market/MarketMigrationTest.kt`
+- Schemas: `app/schemas/.../market.MarketDatabase/2.json`,
+  `.../player.PlayerDatabase/4.json`
+
+### Files modified
+
+- `core/database/market/` — `MarketEntities.kt`, `MarketDatabase.kt`,
+  `MarketDao.kt`, `MarketMappers.kt`, `RoomMarketRepository.kt`
+- `core/database/player/` — `PlayerEntities.kt`, `PlayerDatabase.kt`,
+  `PlayerMigrations.kt`, `PlayerRepository.kt`
+- `core/market/MarketRepository.kt`, `MarketReadModels.kt`
+- `core/chart/renderer/` — `ChartRenderer.kt`, `ChartRenderState.kt`,
+  `ChartOverlay.kt`, `ChartStyle.kt`
+- `feature/trading/TradingViewModel.kt`, `TradingScreen.kt`
+- `feature/news/NewsScreen.kt`, `feature/market/MarketLibraryScreen.kt`,
+  `MarketLibraryViewModel.kt`
+- `navigation/TradeQuestNavHost.kt`, `di/AppContainer.kt`, `MainActivity.kt`,
+  `core/challenge/ChallengeLauncher.kt`, `ui/chart/CandlestickChart.kt`,
+  `res/values/strings.xml`
+- `app/src/debug/.../DebugSelfCheck.kt`
+- Tests: `TradingViewModelTest.kt`, `TradingSessionWiringTest.kt`,
+  `MarketLibraryViewModelTest.kt`, `ReplayFixtures.kt`, `DebugSelfCheckTest.kt`,
+  `PlayerMigrationTest.kt`
+
+### Decisions worth recording
+
+- **A hidden value is removed from the type, not nulled.** A nullable `actual` on
+  one row shape would make "was this revealed too early" a question about every
+  call site — the calendar, the chart flag, the trading list and the diagnostics
+  log all render news. Splitting the type makes it a question about one function,
+  and the debug log cannot leak a field that is not there.
+- **Blind Mode anchors week 1 to the season, not the dataset.** Anchoring to the
+  dataset's first candle would tell the player how much of it has been consumed.
+  Trading days, not calendar days, are counted so a Friday-then-Monday reads D5
+  then D6; counting calendar days would announce the weekend.
+- **The chart does not know what a release is.** A `NewsFlagHit` carries a bar
+  index and a headline only. The tap is re-resolved against the list the flags were
+  built from, so a stale tap opens nothing rather than the wrong event.
+- **Time Warp targets T-5m, not the release.** Arriving exactly at the print gives
+  no time to position, and the plan asks for T-5m explicitly.
+- **The migration test uses its own file name.** See "Bugs found by tests".
+
+### Bugs found by tests
+
+- **The market migration test raced the debug seeder.** `MarketMigrationTest`'s
+  first version called `createDatabase("market.db", 1)` and failed with "a
+  migration from 2 to 1 was required". The cause was not the migration: unit tests
+  run against the debug variant, whose `DebugTradeQuestApplication` opens
+  `market.db` on a background coroutine during `onCreate` to seed a dataset, and
+  that coroutine creates the file at the current version (2) while the test is
+  creating its v1 file. The test lost the race. Fixed by giving the test a
+  dedicated file name — the shared resource is removed rather than the timing
+  papered over. Diagnosed by probing the same helper call with a distinct name,
+  which produced v1 correctly.
+- **`MarketMigrations`' KDoc named a test that did not exist.** The file claimed
+  `MarketMigrationTest` ran the real migration against real SQLite. It did not; the
+  claim is now true. `MIGRATION_3_4` (player 3->4, `Season.blindMode`) was likewise
+  unvalidated and now has a test.
+
+### Verification
+
+- `:app:testDebugUnitTest`: `tests=1157 failures=0 errors=0`. The Phase 11 commit
+  recorded 1092; Phase 12 adds 65 test methods, including the two migration tests
+  added while closing the gap above.
+- The 3->4 player migration and the 1->2 market migration are each run against a
+  real v(N) database by `MigrationTestHelper` and validated against the exported
+  schemas, so a hand-written DDL that drifts from the entity is caught here rather
+  than on a device.
+- `:app:assembleDebug` succeeds.
+- `tools/check_phase_reports.py` and `tools/check_price_scale.py` both pass.
+- Rule 2.2 (a future outcome cannot be revealed) is enforced by the type: the
+  pre-release shape has no field to leak. Rule 4 holds — neither `feature/news` nor
+  `feature/trading` imports `core.database`.
+
+### Unverified requirements
+
+- **No device or emulator (no `/dev/kvm`).** The calendar, the news detail dialog,
+  the chart flag tap and the Time Warp bar have not been seen or touched. Their
+  state models, the mapper and the hit tester are unit-tested; the Compose UI is
+  not.
+- **The chart flag tap gesture is untested end to end.** `NewsFlagHitTester` is
+  tested (including the strip bounds) and the ViewModel's tap resolution is tested,
+  but the Compose `pointerInput` that joins them has no automated test.
+- **Blind Mode's rendering is unverified on screen.** `BlindClock` is unit-tested
+  for the ordinal and the `W2 D3 14:30` format; that the axes, the dataset name and
+  the library actually show the masked form has not been observed.
+- **A warp has not been run over a long gap.** Position processing during a warp is
+  tested over a weekend-scale jump in `TradingSessionWiringTest`; a warp across
+  many days of intervening events is not.
+- **The reaction-note window is the plan's design, not calibrated.** That a given
+  release's note should appear after N minutes is a choice, not a measurement.
+
+### Phase completion report
+
+```
+PHASE COMPLETION REPORT
+
+Phase: 12 — Historical news, Blind Mode and Time Warp
+Status: COMPLETE
+
+Implemented:
+- NewsRelease as a two-shape type: Released carries the actual, Pending cannot
+- NewsReleaseProjection as the single visibility seam, keyed on the simulated instant
+- Economic calendar with a detail that withholds the actual until release
+- Reaction note gated on the event's own price window
+- News flags on the chart: red high impact, amber medium, tap to reveal
+- NewsFlagHitTester owning the strip geometry and the hit test
+- BlindClock rendering W2 D3 14:30, anchored to the season, counting trading days
+- TimeWarpResolver: skip weekend, next London, next New York, next high-impact T-5m
+- WarpPermission refusing a challenge warp with exposure, naming the blocker
+- NewsScheduleSource port; trading and news features share one projection
+- Additive migrations: market 1->2 (calendar columns), player 3->4 (Season.blindMode)
+- Migration tests for both, which did not exist before this phase
+- 65 new tests; 1157 total, 0 failures
+
+Files Created:
+- core/news/NewsRelease.kt, NewsCategory.kt, NewsImpact.kt
+- core/challenge/BlindMode.kt
+- core/simulation/warp/TimeWarpResolver.kt, WarpPermission.kt
+- core/chart/renderer/NewsFlagHitTester.kt
+- core/database/market/MarketMigrations.kt
+- feature/news/NewsScheduleSource.kt, NewsViewModel.kt, NewsFlagMapper.kt
+- Tests: NewsReleaseProjectionTest.kt, BlindModeTest.kt, TimeWarpResolverTest.kt,
+  NewsFlagMapperTest.kt, MarketMigrationTest.kt
+- Schemas: MarketDatabase/2.json, PlayerDatabase/4.json
+
+Files Modified:
+- core/database/market/: MarketEntities, MarketDatabase, MarketDao, MarketMappers,
+  RoomMarketRepository
+- core/database/player/: PlayerEntities, PlayerDatabase, PlayerMigrations,
+  PlayerRepository
+- core/market/MarketRepository.kt, MarketReadModels.kt
+- core/chart/renderer/: ChartRenderer, ChartRenderState, ChartOverlay, ChartStyle
+- feature/trading/TradingViewModel.kt, TradingScreen.kt
+- feature/news/NewsScreen.kt, feature/market/MarketLibraryScreen.kt,
+  MarketLibraryViewModel.kt
+- navigation/TradeQuestNavHost.kt, di/AppContainer.kt, MainActivity.kt,
+  core/challenge/ChallengeLauncher.kt, ui/chart/CandlestickChart.kt,
+  res/values/strings.xml
+- app/src/debug/DebugSelfCheck.kt
+- Tests: TradingViewModelTest.kt, TradingSessionWiringTest.kt,
+  MarketLibraryViewModelTest.kt, ReplayFixtures.kt, DebugSelfCheckTest.kt,
+  PlayerMigrationTest.kt
+
+Build Result:
+- :app:compileDebugKotlin and :app:assembleDebug succeed
+
+Tests Executed:
+- 1157
+
+Tests Passed:
+- 1157
+
+Tests Failed:
+- 0
+
+Known Issues:
+- No on-device verification of the calendar, the news detail, the chart flag tap
+  or the Time Warp bar
+- The chart flag tap gesture (Compose pointerInput) has no automated test
+- Blind Mode's on-screen masking has not been observed
+
+Unverified Requirements:
+- The Compose UI of the News screen, the news detail dialog and the warp bar
+- That Blind Mode masks the axes, the dataset name and the library on screen
+- A warp across many days of intervening events (only a weekend-scale jump is tested)
+- The reaction-note window is the plan's figure, not calibrated against play
+
+Next Phase:
+- Phase 13. Phases 13-14 remain; the hard gate is after Phase 14.
+```

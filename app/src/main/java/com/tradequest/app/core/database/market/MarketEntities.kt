@@ -102,7 +102,25 @@ data class Candle1mEntity(
     val tickVolume: Int,
 )
 
-/** A news event, scoped to exactly one dataset (Step 2.5). */
+/**
+ * A scheduled economic release, scoped to exactly one dataset (Steps 2.5, 12.1).
+ *
+ * # Why the release fields are nullable
+ *
+ * [forecast], [previous] and [actual] are all genuinely optional in the source
+ * data, and they are optional for *different* reasons:
+ *
+ * - [forecast] and [previous] are unknown for a release the calendar carries
+ *   with no consensus, and `NULL` says so. A `0.0` default would be a fabricated
+ *   number that the UI would then display as if it were real.
+ * - [actual] is `NULL` until the release happens. That is not a gap in the data;
+ *   it is the whole point of the column. See [NewsReleaseProjection] for the
+ *   rule that decides when a stored actual becomes visible.
+ *
+ * [reactionNote] is the one field whose visibility is time-gated on a *price*
+ * window rather than on the release instant itself (Step 12.4), so it is stored
+ * with the window length it needs rather than revealed immediately.
+ */
 @Entity(
     tableName = "NewsEvent",
     foreignKeys = [
@@ -129,11 +147,51 @@ data class NewsEventEntity(
     @ColumnInfo(name = "headline")
     val headline: String,
 
+    /**
+     * Long-form description. Retained from the Phase 2 feed shape.
+     *
+     * Kept rather than dropped: removing a `NOT NULL` column in SQLite requires
+     * rebuilding the table, which is exactly the kind of migration that can
+     * silently lose rows. The column is harmless here — the calendar shows
+     * [headline] and uses this only as an optional detail body — and keeping it
+     * makes migration 1->2 purely additive.
+     */
     @ColumnInfo(name = "body")
-    val body: String,
+    val body: String = "",
 
+    /** Category as stored; parsed through `NewsCategory.fromStored`. */
+    @ColumnInfo(name = "category", defaultValue = "OTHER")
+    val category: String = "OTHER",
+
+    /** Impact as stored; parsed through `NewsImpact.fromStored`. */
     @ColumnInfo(name = "impact")
     val impact: String,
+
+    /** Consensus forecast, or null when the source has none. */
+    @ColumnInfo(name = "forecast")
+    val forecast: String? = null,
+
+    /** Previous reading, or null when the source has none. */
+    @ColumnInfo(name = "previous")
+    val previous: String? = null,
+
+    /** The released figure. Null before the release, and null if never recorded. */
+    @ColumnInfo(name = "actual")
+    val actual: String? = null,
+
+    /** Free-text note on how the market reacted. Gated on a price window. */
+    @ColumnInfo(name = "reactionNote")
+    val reactionNote: String? = null,
+
+    /**
+     * How long after the release the reaction note becomes visible, in minutes.
+     *
+     * Stored per event because the window is a property of the release, not of
+     * the app: a rate decision moves the market for longer than a minor survey.
+     * Zero means the note is visible as soon as the release is.
+     */
+    @ColumnInfo(name = "reactionWindowMinutes", defaultValue = "0")
+    val reactionWindowMinutes: Int = 0,
 )
 
 /** A detected market closure within one dataset. */

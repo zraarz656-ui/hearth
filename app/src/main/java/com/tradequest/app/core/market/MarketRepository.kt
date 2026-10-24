@@ -61,6 +61,16 @@ interface MarketRepository {
 
     suspend fun newsCount(datasetId: String): Int
 
+    /**
+     * The next high-impact release at or after [afterUtcMs], or null (Step 12.6).
+     *
+     * Returns the domain [NewsItem], not the entity, so Time Warp's caller stays
+     * on the domain side of the repository boundary. Impact matching is
+     * case-insensitive inside the implementation, because the stored string is
+     * external data.
+     */
+    suspend fun nextHighImpactNews(datasetId: String, afterUtcMs: Long): NewsItem?
+
     suspend fun closures(datasetId: String): List<DatasetClosure>
 
     suspend fun validation(datasetId: String): DatasetValidationInfo?

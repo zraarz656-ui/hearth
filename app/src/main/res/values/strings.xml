@@ -35,6 +35,8 @@
     <string name="market_status_valid">Valid</string>
     <string name="market_status_warnings">Warnings</string>
     <string name="market_status_gaps">Gaps</string>
+    <string name="market_detail_blind_mode">Blind mode</string>
+    <string name="market_detail_blind_mode_hint">Hide the dataset name and all absolute dates. The calendar and chart show relative coordinates instead. This cannot be changed once the challenge starts.</string>
 
     <!-- Trade notifications (Step 7.9) -->
     <string name="notification_channel_trades">Trade activity</string>
@@ -101,4 +103,42 @@
     <string name="challenge_of_strikes">%1$d of %2$d used</string>
     <string name="challenge_points_of_max">%1$d / %2$d</string>
     <string name="challenge_progress_percent">%1$d%%</string>
+
+    <!-- News calendar (Steps 12.2-12.7) -->
+    <string name="news_title">Economic calendar</string>
+    <string name="news_no_season_title">No season running</string>
+    <string name="news_no_season_body">Start a season to see the economic calendar for its dataset. Scheduled releases are projected against the simulated time, so a release outcome stays hidden until it happens.</string>
+    <string name="news_empty_title">No releases in this dataset</string>
+    <string name="news_empty_body">This dataset was imported without an economic calendar.</string>
+    <string name="news_error_title">Could not read the news schedule</string>
+    <string name="news_blind_badge">Blind mode</string>
+    <string name="news_blind_hint">Absolute dates and the dataset name are hidden. Times are relative to the start of your season.</string>
+    <string name="news_filter_all">All</string>
+    <string name="news_filter_high">High impact</string>
+    <string name="news_filter_medium">Medium impact</string>
+    <string name="news_detail_title">Release</string>
+    <string name="news_detail_forecast">Forecast</string>
+    <string name="news_detail_previous">Previous</string>
+    <string name="news_detail_actual">Actual</string>
+    <string name="news_detail_reaction">Market reaction</string>
+    <string name="news_detail_not_released">Not released yet</string>
+    <string name="news_detail_awaiting_window">Reaction note becomes available once the release window has elapsed.</string>
+    <string name="news_detail_no_value">Not recorded</string>
+    <string name="news_detail_close">Close</string>
+    <string name="news_impact_high">High</string>
+    <string name="news_impact_medium">Medium</string>
+    <string name="news_impact_low">Low</string>
+    <string name="news_impact_unknown">Unknown impact</string>
+    <string name="news_released">Released</string>
+    <string name="news_scheduled">Scheduled</string>
+
+    <!-- Time Warp (Steps 12.6, 12.7) -->
+    <string name="warp_title">Time warp</string>
+    <string name="warp_skip_weekend">Skip weekend</string>
+    <string name="warp_next_london">Next London</string>
+    <string name="warp_next_new_york">Next New York</string>
+    <string name="warp_next_news">Next high-impact news</string>
+    <string name="warp_news_hint">Lands five minutes before the release.</string>
+    <string name="warp_blocked_title">Time warp unavailable</string>
+    <string name="warp_practice_hint">In a challenge, a time warp is only allowed while you have no open positions or pending orders.</string>
 </resources>

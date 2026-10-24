@@ -8,9 +8,13 @@ import com.tradequest.app.core.challenge.ChallengeRules
 import com.tradequest.app.core.challenge.SeasonStatus
 import com.tradequest.app.core.database.market.Candle1mEntity
 import com.tradequest.app.core.database.market.MarketDatasetEntity
+import com.tradequest.app.core.database.market.NewsEventEntity
+import com.tradequest.app.core.news.NewsRelease
 import com.tradequest.app.core.risk.RiskLimits
 import com.tradequest.app.core.trading.AccountState
 import com.tradequest.app.core.trading.CommandResult
+import com.tradequest.app.core.simulation.warp.WarpPermission
+import com.tradequest.app.feature.news.WarpKind
 import com.tradequest.app.core.trading.OrderSide
 import com.tradequest.app.core.trading.TradingState
 import com.tradequest.app.di.AppContainer
@@ -19,7 +23,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 /**
- * Runs the Phase 10 and Phase 11 flows through the real object graph on the
+ * Runs the Phase 10, 11 and 12 flows through the real object graph on the
  * device, and reports what happened.
  *
  * # Why this exists
@@ -69,6 +73,10 @@ internal object DebugSelfCheck {
     private const val DS_FLAT = "selfcheck-ds-flat"
     private const val DS_TRADE = "selfcheck-ds-trade"
     private const val DS_CHALLENGE = "selfcheck-ds-challenge"
+    private const val DS_NEWS = "selfcheck-ds-news"
+
+    /** The headline the news checks look for, so a rename cannot silently pass. */
+    private const val NEWS_HEADLINE = "self-check non-farm payrolls"
     private const val DS_EMPTY = "selfcheck-ds-empty"
 
     private const val T0 = 1_705_276_800_000L
@@ -87,7 +95,10 @@ internal object DebugSelfCheck {
             DebugDiagnostics.log("selfcheck", line)
         }
 
-        emit("=== TradeQuest self-check: Phase 10 (trading) and Phase 11 (challenge) ===")
+        emit(
+            "=== TradeQuest self-check: Phase 10 (trading), Phase 11 (challenge) " +
+                "and Phase 12 (news, blind mode, time warp) ===",
+        )
 
         // A clean slate: a previous run's files would make the library non-empty
         // and change the results.
@@ -112,6 +123,7 @@ internal object DebugSelfCheck {
             runWiringChecks(container, ::check)
             runTradingChecks(container, ::check)
             runChallengeChecks(container, ::check)
+            runNewsChecks(container, ::check)
             runRealTimeCheck(container, ::check)
             runPersistenceCheck(context, ::check)
 
@@ -391,6 +403,135 @@ internal object DebugSelfCheck {
         }
     }
 
+    // ------------------------------------------------- Phase 12 news and warps
+
+    /**
+     * Exercises the news calendar, Blind Mode and Time Warp through the real
+     * container.
+     *
+     * # Why these are device checks and not unit tests
+     *
+     * The unit suite pins the projection, the resolver and the permission rule in
+     * isolation. What it cannot pin is that the *app's* `newsScheduleSource` is
+     * assembled correctly: that the season's blind flag survives the migration and
+     * the launcher, that the high-impact schedule the resolver searches is the one
+     * the database holds, and that a warp moves the clock *and* leaves the replay
+     * caught up. Those are joins between parts, which is exactly the class of bug
+     * Phase 11 shipped.
+     */
+    private suspend fun runNewsChecks(
+        container: AppContainer,
+        check: suspend (String, suspend () -> String) -> Unit,
+    ) {
+        // A dataset with a high-impact release ten minutes in, carrying an actual
+        // and a reaction note so the projection has something to withhold.
+        seedDataset(container, DS_NEWS, "self-check news", step = 1_000)
+        seedNews(container, DS_NEWS)
+
+        // Blind Mode is chosen at launch (Step 12.5) and stored on the season.
+        container.challengeLauncher.startChallenge(
+            DS_NEWS,
+            confirmAbandon = true,
+            blindMode = true,
+        )
+
+        check("12.5 Blind Mode survives the launch path and is read back from the season") {
+            val season = container.playerRepository.activeSeason()
+                ?: error("no active season after starting")
+            require(season.blindMode) { "the stored season is not blind" }
+            require(container.newsScheduleSource.isBlind()) {
+                "the source reports non-blind for a blind season"
+            }
+            "season stored blind, source reports blind"
+        }
+
+        check("12.4 before the release the source returns an event with no actual") {
+            val releases = container.newsScheduleSource.releasesAt(
+                datasetId = DS_NEWS,
+                fromUtcMs = T0,
+                toUtcMs = T0 + 30 * MINUTE,
+                simUtcMs = T0,
+            )
+            val event = releases.firstOrNull { it.headline == NEWS_HEADLINE }
+                ?: error("the seeded release was not returned")
+            require(event is NewsRelease.Pending) { "before the release the event is $event" }
+            require(!event.isReleased) { "the event reports itself released at T0" }
+            require(event.forecast == "180K") { "forecast ${event.forecast}" }
+            "pending, forecast=${event.forecast}, previous=${event.previous}, no actual"
+        }
+
+        check("12.4 after the release the same event carries the actual") {
+            val releases = container.newsScheduleSource.releasesAt(
+                datasetId = DS_NEWS,
+                fromUtcMs = T0,
+                toUtcMs = T0 + 30 * MINUTE,
+                simUtcMs = T0 + 11 * MINUTE,
+            )
+            val event = releases.firstOrNull { it.headline == NEWS_HEADLINE }
+                ?: error("the seeded release was not returned")
+            val released = event as? NewsRelease.Released
+                ?: error("after the release the event is still $event")
+            require(released.actual == "1.2%") { "actual ${released.actual}" }
+            // One minute past the release is inside the 15-minute reaction window,
+            // so the note must still be withheld.
+            require(released.reactionNote == null) {
+                "the reaction note was revealed before its window: ${released.reactionNote}"
+            }
+            "released, actual=${released.actual}, reaction withheld"
+        }
+
+        check("12.6 the news warp resolves to five minutes before the release") {
+            val target = container.newsScheduleSource.resolveWarp(WarpKind.NEXT_HIGH_IMPACT_NEWS)
+                ?: error("no warp target for an active season")
+            val expected = T0 + 10 * MINUTE - 5 * MINUTE
+            require(target.atUtcMs == expected) {
+                "warp target ${target.atUtcMs}, expected $expected"
+            }
+            "resolved to ${target.atUtcMs} (T-5m)"
+        }
+
+        check("12.7 performing the warp moves the clock and catches the replay up") {
+            val target = container.newsScheduleSource.resolveWarp(WarpKind.NEXT_HIGH_IMPACT_NEWS)
+                ?: error("no warp target")
+            val reached = container.newsScheduleSource.performWarp(target)
+                ?: error("the warp did not move the clock")
+            val expected = target.atUtcMs!!
+            require(reached >= expected) { "the clock reached $reached, short of $expected" }
+            // Real time keeps moving at 1x, so allow a small overshoot rather than
+            // asserting an exact instant.
+            require(reached - expected < 5 * MINUTE) { "the clock overshot to $reached" }
+
+            val season = container.playerRepository.activeSeason() ?: error("no active season")
+            val stored = container.replayStore.load(season.seasonId)
+                ?: error("the warp left no replay state")
+            require(stored.processedToSimUtcMs >= expected) {
+                "the replay stopped at ${stored.processedToSimUtcMs}, behind the warp"
+            }
+            "clock at $reached, replay committed to ${stored.processedToSimUtcMs}"
+        }
+
+        check("12.7 a challenge with an open position refuses the warp") {
+            // Rebind to a flat dataset, open a position, then ask for permission:
+            // the counts must come from the live session, not a stale snapshot.
+            container.challengeLauncher.startChallenge(DS_NEWS, confirmAbandon = true)
+            val session = container.tradingSessionSource.createLiveSession()
+                ?: error("no session for the fresh season")
+            session.open()
+            val entry = T0 + 2 * MINUTE
+            session.advanceTo(entry)
+            val placed = session.placeMarket("sc-news-o1", OrderSide.BUY, 10, entry)
+            require(placed is CommandResult.Accepted) { "open rejected: $placed" }
+
+            val permission = container.newsScheduleSource.warpPermission()
+            val refused = permission as? WarpPermission.RefusedExposure
+                ?: error("the warp was not refused: $permission")
+            require(refused.openPositionCount == 1) {
+                "reported ${refused.openPositionCount} open positions"
+            }
+            refused.reason
+        }
+    }
+
     // -------------------------------------------------------- real elapsed time
 
     private suspend fun runRealTimeCheck(
@@ -508,6 +649,39 @@ internal object DebugSelfCheck {
                     tickVolume = 100,
                 )
             },
+        )
+    }
+
+    /**
+     * Seeds one high-impact release with an outcome, ten minutes into the dataset.
+     *
+     * The actual and the reaction note are present in the row on purpose: the point
+     * of Step 12.4 is that the projection withholds them, not that the database is
+     * missing them.
+     */
+    private suspend fun seedNews(container: AppContainer, datasetId: String) {
+        container.marketDatabase.marketDao().insertNews(
+            listOf(
+                NewsEventEntity(
+                    datasetId = datasetId,
+                    publishedAtUtcMs = T0 + 10 * MINUTE,
+                    headline = NEWS_HEADLINE,
+                    body = "self-check release",
+                    category = "EMPLOYMENT",
+                    impact = "HIGH",
+                    forecast = "180K",
+                    previous = "175K",
+                    actual = "1.2%",
+                    reactionNote = "Gold spiked on the print.",
+                    reactionWindowMinutes = 15,
+                ),
+                NewsEventEntity(
+                    datasetId = datasetId,
+                    publishedAtUtcMs = T0 + 4 * MINUTE,
+                    headline = "self-check survey",
+                    impact = "MEDIUM",
+                ),
+            ),
         )
     }
 

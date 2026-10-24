@@ -65,6 +65,12 @@ fun NewsEventEntity.toDomain(): NewsItem = NewsItem(
     headline = headline,
     body = body,
     impact = impact,
+    category = category,
+    forecast = forecast,
+    previous = previous,
+    actual = actual,
+    reactionNote = reactionNote,
+    reactionWindowMinutes = reactionWindowMinutes,
 )
 
 fun MarketClosureEntity.toDomain(): DatasetClosure = DatasetClosure(

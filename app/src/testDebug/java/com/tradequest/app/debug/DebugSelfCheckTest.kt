@@ -42,6 +42,16 @@ class DebugSelfCheckTest {
         val passes = report.lineSequence().count { it.startsWith("PASS") }
         assertTrue("expected several passing steps, found $passes", passes >= 10)
 
+        // The Phase 12 steps must be present and passing, not merely absent. A
+        // harness that stopped calling `runNewsChecks` would still report zero
+        // failures, which is exactly the silent-hole failure this guards against.
+        for (step in listOf("12.5", "12.4", "12.6", "12.7")) {
+            assertTrue(
+                "no passing self-check step for $step:\n$report",
+                report.lineSequence().any { it.startsWith("PASS") && it.contains(step) },
+            )
+        }
+
         val summary = report.lineSequence().last { it.startsWith("=== self-check complete") }
         assertTrue(
             "the summary must report zero failures, was: $summary",

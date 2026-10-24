@@ -124,6 +124,21 @@ class MarketLibraryViewModel(
         launchStart(datasetId, confirmAbandon = false)
     }
 
+    /**
+     * Whether the next challenge should start in Blind Mode (Step 12.5).
+     *
+     * A pending choice, not a stored setting: it is passed to the launcher when the
+     * challenge starts, so it cannot be changed once the season exists. A toggle
+     * that outlived the challenge would silently make the *next* one blind.
+     */
+    private val _blindMode = MutableStateFlow(false)
+    val blindMode: StateFlow<Boolean> = _blindMode.asStateFlow()
+
+    /** Flips the pending Blind Mode choice. */
+    fun setBlindMode(enabled: Boolean) {
+        _blindMode.value = enabled
+    }
+
     /** Answers the abandonment prompt (Step 11.3). */
     fun confirmAbandon(datasetId: String) {
         launchStart(datasetId, confirmAbandon = true)
@@ -142,7 +157,13 @@ class MarketLibraryViewModel(
                 ?: datasetId
 
             val message = try {
-                when (val result = launcher.startChallenge(datasetId, confirmAbandon)) {
+                when (
+                    val result = launcher.startChallenge(
+                        datasetId = datasetId,
+                        confirmAbandon = confirmAbandon,
+                        blindMode = _blindMode.value,
+                    )
+                ) {
                     is ChallengeLaunchResult.Started ->
                         ChallengeStartMessage.Started(result.datasetDisplayName)
 

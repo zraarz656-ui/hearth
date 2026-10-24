@@ -110,6 +110,27 @@ object PlayerMigrations {
         }
     }
 
+    /**
+     * 3 -> 4: adds `Season.blindMode` (Step 12.5).
+     *
+     * An additive column with a default, so an existing season reads as a
+     * non-blind one. That is the correct value for a season created before the
+     * mode existed: it was played with dates visible, and retroactively declaring
+     * it blind would change what the attempt was.
+     *
+     * The DDL must match what Room generates for [SeasonEntity] exactly, or Room's
+     * schema validation will refuse to open the database. It is kept in step with
+     * the entity by hand, and the exported schema under `app/schemas` is the record
+     * of what was verified.
+     */
+    val MIGRATION_3_4 = object : Migration(3, 4) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                "ALTER TABLE `Season` ADD COLUMN `blindMode` INTEGER NOT NULL DEFAULT 0",
+            )
+        }
+    }
+
     /** Every migration, in version order. Passed to the database builder. */
-    val ALL: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
+    val ALL: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
 }

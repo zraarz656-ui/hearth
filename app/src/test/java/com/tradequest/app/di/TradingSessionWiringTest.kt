@@ -272,4 +272,82 @@ class TradingSessionWiringTest {
 
         assertNull("a terminal season must not be re-evaluated", evaluation)
     }
+
+    // --------------------------------- Step 12.7: position processing during a warp
+
+    @Test
+    fun `a warp processes the intervening market so a bracket is filled`() = runTest {
+        // Journey D: a position is open with a target, the clock warps forward, and
+        // the price movement in between must be evaluated — not skipped. A warp that
+        // only moved the clock would leave the position open at the end, which is the
+        // failure the plan calls "trading consequences skipped".
+        val seasonId = startChallenge("ds_live")
+        val session = container.tradingSessionSource.createLiveSession()!!
+        session.open()
+        val entry = t0 + 2 * 60_000L
+        session.advanceTo(entry)
+
+        // The seeded series rises $1.00 per minute, so a buy with a 3-pip target is
+        // reached within a few intervening bars.
+        val opened = session.placeMarket(
+            orderId = "o1",
+            side = OrderSide.BUY,
+            volumeHundredths = 10,
+            atSimUtcMs = entry,
+            takeProfitPips = 3,
+        )
+        assertTrue("expected acceptance, got $opened", opened is CommandResult.Accepted)
+        assertEquals(1, session.openPositions().size)
+
+        // Warp forward through the same call the News screen uses.
+        val destination = t0 + 25 * 60_000L
+        val reached = container.newsScheduleSource.performWarp(
+            com.tradequest.app.core.simulation.warp.WarpTarget.SkipWeekend(
+                atUtcMs = destination,
+                isBeyondDataset = false,
+            ),
+        )
+        assertNotNull("the warp must move the clock", reached)
+
+        // The target was processed during the catch-up: the trade is closed, in
+        // profit, and says why. That is the evidence the intervening bars were
+        // evaluated rather than the jump being a bare clock write.
+        val stored = container.replayStore.load(seasonId)!!
+        assertTrue(
+            "the warp must have processed up to the destination",
+            stored.processedToSimUtcMs >= destination,
+        )
+        val closed = stored.closedTrades.singleOrNull()
+        assertNotNull("the bracket must have filled during the warp", closed)
+        assertEquals(
+            com.tradequest.app.core.trading.CloseReason.TAKE_PROFIT,
+            closed!!.closeReason,
+        )
+        assertTrue("a filled target must realise a profit", closed.netPnlMicros > 0)
+    }
+
+    @Test
+    fun `a challenge with exposure refuses the warp, and a flat one allows it`() = runTest {
+        // Step 12.7's two halves, through the app's own permission read rather than
+        // a hand-built call: the counts must come from the live session.
+        startChallenge("ds_live")
+        val session = container.tradingSessionSource.createLiveSession()!!
+        session.open()
+
+        assertEquals(
+            "a flat challenge must allow the warp",
+            com.tradequest.app.core.simulation.warp.WarpPermission.Allowed,
+            container.newsScheduleSource.warpPermission(),
+        )
+
+        val entry = t0 + 2 * 60_000L
+        session.advanceTo(entry)
+        session.placeMarket("o1", OrderSide.BUY, 10, entry)
+
+        val permission = container.newsScheduleSource.warpPermission()
+        assertTrue(
+            "a challenge with an open position must refuse the warp, was $permission",
+            permission is com.tradequest.app.core.simulation.warp.WarpPermission.RefusedExposure,
+        )
+    }
 }

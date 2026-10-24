@@ -1,0 +1,1242 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 4,
+    "identityHash": "96146436b7c2ad188504d5bab1063edf",
+    "entities": [
+      {
+        "tableName": "Season",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`seasonId` TEXT NOT NULL, `datasetId` TEXT NOT NULL, `mode` TEXT NOT NULL, `blindMode` INTEGER NOT NULL DEFAULT 0, `status` TEXT NOT NULL, `startingBalanceMicros` INTEGER NOT NULL, `balanceMicros` INTEGER NOT NULL, `equityMicros` INTEGER NOT NULL, `peakEquityMicros` INTEGER NOT NULL, `startedAtSimUtcMs` INTEGER NOT NULL, `createdAtRealUtcMs` INTEGER NOT NULL, `completedAtSimUtcMs` INTEGER, `tradingDayCount` INTEGER NOT NULL, `dailyStrikeCount` INTEGER NOT NULL, `scorePoints` INTEGER NOT NULL, `outcomeReason` TEXT, PRIMARY KEY(`seasonId`))",
+        "fields": [
+          {
+            "fieldPath": "seasonId",
+            "columnName": "seasonId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "datasetId",
+            "columnName": "datasetId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "mode",
+            "columnName": "mode",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "blindMode",
+            "columnName": "blindMode",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startingBalanceMicros",
+            "columnName": "startingBalanceMicros",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "balanceMicros",
+            "columnName": "balanceMicros",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "equityMicros",
+            "columnName": "equityMicros",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "peakEquityMicros",
+            "columnName": "peakEquityMicros",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startedAtSimUtcMs",
+            "columnName": "startedAtSimUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtRealUtcMs",
+            "columnName": "createdAtRealUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "completedAtSimUtcMs",
+            "columnName": "completedAtSimUtcMs",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "tradingDayCount",
+            "columnName": "tradingDayCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dailyStrikeCount",
+            "columnName": "dailyStrikeCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "scorePoints",
+            "columnName": "scorePoints",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "outcomeReason",
+            "columnName": "outcomeReason",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "seasonId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_Season_datasetId",
+            "unique": false,
+            "columnNames": [
+              "datasetId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_Season_datasetId` ON `${TABLE_NAME}` (`datasetId`)"
+          }
+        ]
+      },
+      {
+        "tableName": "TradeOrder",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`orderId` TEXT NOT NULL, `seasonId` TEXT NOT NULL, `placedAtSimUtcMs` INTEGER NOT NULL, `orderType` TEXT NOT NULL, `side` TEXT NOT NULL, `volumeHundredths` INTEGER NOT NULL, `requestedPriceUnits` INTEGER, `stopLossPips` INTEGER, `takeProfitPips` INTEGER, `status` TEXT NOT NULL, `resolvedAtSimUtcMs` INTEGER, `rejectionReason` TEXT, PRIMARY KEY(`orderId`), FOREIGN KEY(`seasonId`) REFERENCES `Season`(`seasonId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "orderId",
+            "columnName": "orderId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "seasonId",
+            "columnName": "seasonId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "placedAtSimUtcMs",
+            "columnName": "placedAtSimUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "orderType",
+            "columnName": "orderType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "side",
+            "columnName": "side",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "volumeHundredths",
+            "columnName": "volumeHundredths",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "requestedPriceUnits",
+            "columnName": "requestedPriceUnits",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "stopLossPips",
+            "columnName": "stopLossPips",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "takeProfitPips",
+            "columnName": "takeProfitPips",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "resolvedAtSimUtcMs",
+            "columnName": "resolvedAtSimUtcMs",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "rejectionReason",
+            "columnName": "rejectionReason",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "orderId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_TradeOrder_seasonId_placedAtSimUtcMs",
+            "unique": false,
+            "columnNames": [
+              "seasonId",
+              "placedAtSimUtcMs"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_TradeOrder_seasonId_placedAtSimUtcMs` ON `${TABLE_NAME}` (`seasonId`, `placedAtSimUtcMs`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "Season",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "seasonId"
+            ],
+            "referencedColumns": [
+              "seasonId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "Execution",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`executionId` TEXT NOT NULL, `seasonId` TEXT NOT NULL, `orderId` TEXT NOT NULL, `executedAtSimUtcMs` INTEGER NOT NULL, `priceUnits` INTEGER NOT NULL, `volumeHundredths` INTEGER NOT NULL, `commissionMicros` INTEGER NOT NULL, `slippageUnits` INTEGER NOT NULL, PRIMARY KEY(`executionId`), FOREIGN KEY(`seasonId`) REFERENCES `Season`(`seasonId`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`orderId`) REFERENCES `TradeOrder`(`orderId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "executionId",
+            "columnName": "executionId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "seasonId",
+            "columnName": "seasonId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "orderId",
+            "columnName": "orderId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "executedAtSimUtcMs",
+            "columnName": "executedAtSimUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "priceUnits",
+            "columnName": "priceUnits",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "volumeHundredths",
+            "columnName": "volumeHundredths",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "commissionMicros",
+            "columnName": "commissionMicros",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "slippageUnits",
+            "columnName": "slippageUnits",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "executionId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_Execution_seasonId_executedAtSimUtcMs",
+            "unique": false,
+            "columnNames": [
+              "seasonId",
+              "executedAtSimUtcMs"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_Execution_seasonId_executedAtSimUtcMs` ON `${TABLE_NAME}` (`seasonId`, `executedAtSimUtcMs`)"
+          },
+          {
+            "name": "index_Execution_orderId",
+            "unique": false,
+            "columnNames": [
+              "orderId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_Execution_orderId` ON `${TABLE_NAME}` (`orderId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "Season",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "seasonId"
+            ],
+            "referencedColumns": [
+              "seasonId"
+            ]
+          },
+          {
+            "table": "TradeOrder",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "orderId"
+            ],
+            "referencedColumns": [
+              "orderId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "Position",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`positionId` TEXT NOT NULL, `seasonId` TEXT NOT NULL, `openedAtSimUtcMs` INTEGER NOT NULL, `side` TEXT NOT NULL, `volumeHundredths` INTEGER NOT NULL, `openPriceUnits` INTEGER NOT NULL, `stopLossPips` INTEGER, `takeProfitPips` INTEGER, `status` TEXT NOT NULL, `closedAtSimUtcMs` INTEGER, `closePriceUnits` INTEGER, PRIMARY KEY(`positionId`), FOREIGN KEY(`seasonId`) REFERENCES `Season`(`seasonId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "positionId",
+            "columnName": "positionId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "seasonId",
+            "columnName": "seasonId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "openedAtSimUtcMs",
+            "columnName": "openedAtSimUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "side",
+            "columnName": "side",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "volumeHundredths",
+            "columnName": "volumeHundredths",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "openPriceUnits",
+            "columnName": "openPriceUnits",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "stopLossPips",
+            "columnName": "stopLossPips",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "takeProfitPips",
+            "columnName": "takeProfitPips",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "closedAtSimUtcMs",
+            "columnName": "closedAtSimUtcMs",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "closePriceUnits",
+            "columnName": "closePriceUnits",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "positionId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_Position_seasonId_status",
+            "unique": false,
+            "columnNames": [
+              "seasonId",
+              "status"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_Position_seasonId_status` ON `${TABLE_NAME}` (`seasonId`, `status`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "Season",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "seasonId"
+            ],
+            "referencedColumns": [
+              "seasonId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "ClosedTrade",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`tradeId` TEXT NOT NULL, `seasonId` TEXT NOT NULL, `positionId` TEXT NOT NULL, `side` TEXT NOT NULL, `volumeHundredths` INTEGER NOT NULL, `openPriceUnits` INTEGER NOT NULL, `closePriceUnits` INTEGER NOT NULL, `openTimeSimUtcMs` INTEGER NOT NULL, `closeTimeSimUtcMs` INTEGER NOT NULL, `grossPnlMicros` INTEGER NOT NULL, `commissionMicros` INTEGER NOT NULL, `swapMicros` INTEGER NOT NULL, `netPnlMicros` INTEGER NOT NULL, `closeReason` TEXT NOT NULL, `realizedRMicros` INTEGER NOT NULL, PRIMARY KEY(`tradeId`), FOREIGN KEY(`seasonId`) REFERENCES `Season`(`seasonId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "tradeId",
+            "columnName": "tradeId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "seasonId",
+            "columnName": "seasonId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "positionId",
+            "columnName": "positionId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "side",
+            "columnName": "side",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "volumeHundredths",
+            "columnName": "volumeHundredths",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "openPriceUnits",
+            "columnName": "openPriceUnits",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "closePriceUnits",
+            "columnName": "closePriceUnits",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "openTimeSimUtcMs",
+            "columnName": "openTimeSimUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "closeTimeSimUtcMs",
+            "columnName": "closeTimeSimUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "grossPnlMicros",
+            "columnName": "grossPnlMicros",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "commissionMicros",
+            "columnName": "commissionMicros",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "swapMicros",
+            "columnName": "swapMicros",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "netPnlMicros",
+            "columnName": "netPnlMicros",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "closeReason",
+            "columnName": "closeReason",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "realizedRMicros",
+            "columnName": "realizedRMicros",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "tradeId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_ClosedTrade_seasonId_closeTimeSimUtcMs",
+            "unique": false,
+            "columnNames": [
+              "seasonId",
+              "closeTimeSimUtcMs"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_ClosedTrade_seasonId_closeTimeSimUtcMs` ON `${TABLE_NAME}` (`seasonId`, `closeTimeSimUtcMs`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "Season",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "seasonId"
+            ],
+            "referencedColumns": [
+              "seasonId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "DailyStats",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`seasonId` TEXT NOT NULL, `tradingDayStartSimUtcMs` INTEGER NOT NULL, `openingEquityMicros` INTEGER NOT NULL, `closingEquityMicros` INTEGER NOT NULL, `highEquityMicros` INTEGER NOT NULL, `lowEquityMicros` INTEGER NOT NULL, `realizedPnlMicros` INTEGER NOT NULL, `tradeCount` INTEGER NOT NULL, `strikeRecorded` INTEGER NOT NULL, `dailyFloorMicros` INTEGER NOT NULL, PRIMARY KEY(`seasonId`, `tradingDayStartSimUtcMs`), FOREIGN KEY(`seasonId`) REFERENCES `Season`(`seasonId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "seasonId",
+            "columnName": "seasonId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tradingDayStartSimUtcMs",
+            "columnName": "tradingDayStartSimUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "openingEquityMicros",
+            "columnName": "openingEquityMicros",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "closingEquityMicros",
+            "columnName": "closingEquityMicros",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "highEquityMicros",
+            "columnName": "highEquityMicros",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lowEquityMicros",
+            "columnName": "lowEquityMicros",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "realizedPnlMicros",
+            "columnName": "realizedPnlMicros",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tradeCount",
+            "columnName": "tradeCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "strikeRecorded",
+            "columnName": "strikeRecorded",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dailyFloorMicros",
+            "columnName": "dailyFloorMicros",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "seasonId",
+            "tradingDayStartSimUtcMs"
+          ]
+        },
+        "foreignKeys": [
+          {
+            "table": "Season",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "seasonId"
+            ],
+            "referencedColumns": [
+              "seasonId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "EquitySnapshot",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`snapshotId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `seasonId` TEXT NOT NULL, `timestampSimUtcMs` INTEGER NOT NULL, `equityMicros` INTEGER NOT NULL, `balanceMicros` INTEGER NOT NULL, FOREIGN KEY(`seasonId`) REFERENCES `Season`(`seasonId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "snapshotId",
+            "columnName": "snapshotId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "seasonId",
+            "columnName": "seasonId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timestampSimUtcMs",
+            "columnName": "timestampSimUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "equityMicros",
+            "columnName": "equityMicros",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "balanceMicros",
+            "columnName": "balanceMicros",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "snapshotId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_EquitySnapshot_seasonId_timestampSimUtcMs",
+            "unique": false,
+            "columnNames": [
+              "seasonId",
+              "timestampSimUtcMs"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_EquitySnapshot_seasonId_timestampSimUtcMs` ON `${TABLE_NAME}` (`seasonId`, `timestampSimUtcMs`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "Season",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "seasonId"
+            ],
+            "referencedColumns": [
+              "seasonId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "Drawing",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`drawingId` TEXT NOT NULL, `seasonId` TEXT NOT NULL, `toolType` TEXT NOT NULL, `pointsJson` TEXT NOT NULL, `colorArgb` INTEGER NOT NULL, `strokeWidthPx` REAL NOT NULL, `createdAtSimUtcMs` INTEGER NOT NULL, PRIMARY KEY(`drawingId`), FOREIGN KEY(`seasonId`) REFERENCES `Season`(`seasonId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "drawingId",
+            "columnName": "drawingId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "seasonId",
+            "columnName": "seasonId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "toolType",
+            "columnName": "toolType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pointsJson",
+            "columnName": "pointsJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "colorArgb",
+            "columnName": "colorArgb",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "strokeWidthPx",
+            "columnName": "strokeWidthPx",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtSimUtcMs",
+            "columnName": "createdAtSimUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "drawingId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_Drawing_seasonId",
+            "unique": false,
+            "columnNames": [
+              "seasonId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_Drawing_seasonId` ON `${TABLE_NAME}` (`seasonId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "Season",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "seasonId"
+            ],
+            "referencedColumns": [
+              "seasonId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "TradeJournal",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`journalId` TEXT NOT NULL, `seasonId` TEXT NOT NULL, `tradeId` TEXT, `createdAtSimUtcMs` INTEGER NOT NULL, `note` TEXT NOT NULL, `tags` TEXT NOT NULL, PRIMARY KEY(`journalId`), FOREIGN KEY(`seasonId`) REFERENCES `Season`(`seasonId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "journalId",
+            "columnName": "journalId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "seasonId",
+            "columnName": "seasonId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tradeId",
+            "columnName": "tradeId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "createdAtSimUtcMs",
+            "columnName": "createdAtSimUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "note",
+            "columnName": "note",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tags",
+            "columnName": "tags",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "journalId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_TradeJournal_seasonId_createdAtSimUtcMs",
+            "unique": false,
+            "columnNames": [
+              "seasonId",
+              "createdAtSimUtcMs"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_TradeJournal_seasonId_createdAtSimUtcMs` ON `${TABLE_NAME}` (`seasonId`, `createdAtSimUtcMs`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "Season",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "seasonId"
+            ],
+            "referencedColumns": [
+              "seasonId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "Badge",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`seasonId` TEXT NOT NULL, `badgeId` TEXT NOT NULL, `title` TEXT NOT NULL, `earnedAtSimUtcMs` INTEGER NOT NULL, PRIMARY KEY(`seasonId`, `badgeId`), FOREIGN KEY(`seasonId`) REFERENCES `Season`(`seasonId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "seasonId",
+            "columnName": "seasonId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "badgeId",
+            "columnName": "badgeId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "earnedAtSimUtcMs",
+            "columnName": "earnedAtSimUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "seasonId",
+            "badgeId"
+          ]
+        },
+        "foreignKeys": [
+          {
+            "table": "Season",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "seasonId"
+            ],
+            "referencedColumns": [
+              "seasonId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "ReplayCheckpoint",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`seasonId` TEXT NOT NULL, `lastCommittedSimUtcMs` INTEGER NOT NULL, `historicalAnchorSimUtcMs` INTEGER NOT NULL, `realAnchorUtcMs` INTEGER NOT NULL, `playbackSpeed` INTEGER NOT NULL, `isPaused` INTEGER NOT NULL, `updatedAtRealUtcMs` INTEGER NOT NULL, PRIMARY KEY(`seasonId`), FOREIGN KEY(`seasonId`) REFERENCES `Season`(`seasonId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "seasonId",
+            "columnName": "seasonId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastCommittedSimUtcMs",
+            "columnName": "lastCommittedSimUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "historicalAnchorSimUtcMs",
+            "columnName": "historicalAnchorSimUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "realAnchorUtcMs",
+            "columnName": "realAnchorUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "playbackSpeed",
+            "columnName": "playbackSpeed",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isPaused",
+            "columnName": "isPaused",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtRealUtcMs",
+            "columnName": "updatedAtRealUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "seasonId"
+          ]
+        },
+        "foreignKeys": [
+          {
+            "table": "Season",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "seasonId"
+            ],
+            "referencedColumns": [
+              "seasonId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "ReplayState",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`seasonId` TEXT NOT NULL, `stateJson` TEXT NOT NULL, `processedToSimUtcMs` INTEGER NOT NULL, `schemaVersion` INTEGER NOT NULL, `updatedAtRealUtcMs` INTEGER NOT NULL, PRIMARY KEY(`seasonId`), FOREIGN KEY(`seasonId`) REFERENCES `Season`(`seasonId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "seasonId",
+            "columnName": "seasonId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "stateJson",
+            "columnName": "stateJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "processedToSimUtcMs",
+            "columnName": "processedToSimUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "schemaVersion",
+            "columnName": "schemaVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtRealUtcMs",
+            "columnName": "updatedAtRealUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "seasonId"
+          ]
+        },
+        "foreignKeys": [
+          {
+            "table": "Season",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "seasonId"
+            ],
+            "referencedColumns": [
+              "seasonId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "ChallengeRecord",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`recordId` TEXT NOT NULL, `seasonId` TEXT NOT NULL, `datasetId` TEXT NOT NULL, `datasetDisplayName` TEXT NOT NULL, `mode` TEXT NOT NULL, `status` TEXT NOT NULL, `outcome` TEXT NOT NULL, `startingBalanceMicros` INTEGER NOT NULL, `finalBalanceMicros` INTEGER NOT NULL, `finalEquityMicros` INTEGER NOT NULL, `peakEquityMicros` INTEGER NOT NULL, `tradingDayCount` INTEGER NOT NULL, `dailyStrikeCount` INTEGER NOT NULL, `scorePoints` INTEGER NOT NULL, `profitPoints` INTEGER NOT NULL, `riskControlPoints` INTEGER NOT NULL, `consistencyPoints` INTEGER NOT NULL, `disciplinePoints` INTEGER NOT NULL, `title` TEXT NOT NULL, `attemptOrdinal` INTEGER NOT NULL, `closedTradeCount` INTEGER NOT NULL, `startedAtSimUtcMs` INTEGER NOT NULL, `completedAtSimUtcMs` INTEGER NOT NULL, `completedAtRealUtcMs` INTEGER NOT NULL, PRIMARY KEY(`recordId`))",
+        "fields": [
+          {
+            "fieldPath": "recordId",
+            "columnName": "recordId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "seasonId",
+            "columnName": "seasonId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "datasetId",
+            "columnName": "datasetId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "datasetDisplayName",
+            "columnName": "datasetDisplayName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "mode",
+            "columnName": "mode",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "outcome",
+            "columnName": "outcome",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startingBalanceMicros",
+            "columnName": "startingBalanceMicros",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "finalBalanceMicros",
+            "columnName": "finalBalanceMicros",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "finalEquityMicros",
+            "columnName": "finalEquityMicros",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "peakEquityMicros",
+            "columnName": "peakEquityMicros",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tradingDayCount",
+            "columnName": "tradingDayCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dailyStrikeCount",
+            "columnName": "dailyStrikeCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "scorePoints",
+            "columnName": "scorePoints",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "profitPoints",
+            "columnName": "profitPoints",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "riskControlPoints",
+            "columnName": "riskControlPoints",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "consistencyPoints",
+            "columnName": "consistencyPoints",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "disciplinePoints",
+            "columnName": "disciplinePoints",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "attemptOrdinal",
+            "columnName": "attemptOrdinal",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "closedTradeCount",
+            "columnName": "closedTradeCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startedAtSimUtcMs",
+            "columnName": "startedAtSimUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "completedAtSimUtcMs",
+            "columnName": "completedAtSimUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "completedAtRealUtcMs",
+            "columnName": "completedAtRealUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "recordId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_ChallengeRecord_datasetId_completedAtRealUtcMs",
+            "unique": false,
+            "columnNames": [
+              "datasetId",
+              "completedAtRealUtcMs"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_ChallengeRecord_datasetId_completedAtRealUtcMs` ON `${TABLE_NAME}` (`datasetId`, `completedAtRealUtcMs`)"
+          },
+          {
+            "name": "index_ChallengeRecord_seasonId",
+            "unique": true,
+            "columnNames": [
+              "seasonId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_ChallengeRecord_seasonId` ON `${TABLE_NAME}` (`seasonId`)"
+          }
+        ]
+      },
+      {
+        "tableName": "Settings",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`key` TEXT NOT NULL, `value` TEXT NOT NULL, PRIMARY KEY(`key`))",
+        "fields": [
+          {
+            "fieldPath": "key",
+            "columnName": "key",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "value",
+            "columnName": "value",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "key"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '96146436b7c2ad188504d5bab1063edf')"
+    ]
+  }
+}

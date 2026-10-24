@@ -27,7 +27,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         MarketClosureEntity::class,
         DatasetValidationEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 abstract class MarketDatabase : RoomDatabase() {
@@ -39,6 +39,7 @@ abstract class MarketDatabase : RoomDatabase() {
 
         fun create(context: Context, name: String = NAME): MarketDatabase =
             Room.databaseBuilder(context.applicationContext, MarketDatabase::class.java, name)
+                .addMigrations(*MarketMigrations.ALL)
                 .addCallback(withoutRowidCallback())
                 .build()
 

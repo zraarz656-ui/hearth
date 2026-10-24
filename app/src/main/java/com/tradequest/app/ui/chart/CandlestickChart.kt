@@ -42,6 +42,7 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import com.tradequest.app.core.chart.coordinates.ChartCoordinateTransformer
 import com.tradequest.app.core.chart.coordinates.PriceAxisRange
 import com.tradequest.app.core.chart.gestures.ChartGesture
 import com.tradequest.app.core.chart.gestures.ChartGesturePriority
@@ -55,6 +56,8 @@ import com.tradequest.app.core.chart.renderer.ChartAutoScale
 import com.tradequest.app.core.chart.renderer.ChartPriceScale
 import com.tradequest.app.core.chart.renderer.ChartRenderState
 import com.tradequest.app.core.chart.renderer.ChartRenderer
+import com.tradequest.app.core.chart.renderer.NewsFlagHit
+import com.tradequest.app.core.chart.renderer.NewsFlagHitTester
 import com.tradequest.app.core.chart.viewport.ChartViewport
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -130,6 +133,23 @@ fun CandlestickChart(
     onOrderLineDrag: (priceUnits: Int) -> Unit = {},
     /** Called when a dragged order line is released. */
     onOrderLineRelease: () -> Unit = {},
+    /**
+     * Called when a tap lands on a news flag (Step 12.3).
+     *
+     * # Why a tap and not a long press
+     *
+     * The plan says the markers are tappable. A long press is already the crosshair
+     * (Step 9.5), and giving it a second meaning on the same strip would make the
+     * two compete. A tap on the strip is unambiguous: the strip is the top few
+     * pixels of the plot, above every candle, so a tap there cannot have meant a bar.
+     *
+     * # Why the hit is a [NewsFlagHit] rather than an index
+     *
+     * The chart resolves the flag against the viewport it is drawing, so the caller
+     * receives the headline that was actually on screen. Re-deriving it from an index
+     * against a re-read schedule could name a different event than the one tapped.
+     */
+    onNewsFlagTap: (NewsFlagHit) -> Unit = {},
 ) {
     val textMeasurer = rememberTextMeasurer()
     val renderer = remember(textMeasurer) { ChartRenderer(textMeasurer) }
@@ -184,6 +204,7 @@ fun CandlestickChart(
     val latestOnOrderLineGrab by rememberUpdatedState(onOrderLineGrab)
     val latestOnOrderLineDrag by rememberUpdatedState(onOrderLineDrag)
     val latestOnOrderLineRelease by rememberUpdatedState(onOrderLineRelease)
+    val latestOnNewsFlagTap by rememberUpdatedState(onNewsFlagTap)
 
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
     val scope = rememberCoroutineScope()
@@ -597,6 +618,23 @@ fun CandlestickChart(
                         val upPosition = up?.position ?: down.position
                         val travelled = (upPosition - down.position).getDistance()
                         val isTap = !onPriceAxis && travelled <= viewConfiguration.touchSlop
+
+                        // Step 12.3: a tap on the news flag strip opens the release.
+                        // Checked before the double-tap branch, because a flag is a
+                        // deliberate target on a strip no candle occupies, and letting
+                        // the second tap of a double-tap resolve the axis instead would
+                        // make the flag feel unresponsive. The hit test itself rejects
+                        // anything below the strip, so a tap on a candle still falls
+                        // through to the axis restore below.
+                        if (isTap && latestState.newsFlags.isNotEmpty()) {
+                            val flagHit = newsFlagAt(upPosition, latestState, viewport, plotWidthPx)
+                            if (flagHit != null) {
+                                latestOnNewsFlagTap(flagHit)
+                                endGesture()
+                                return@awaitEachGesture
+                            }
+                        }
+
                         if (isTap) {
                             val sinceLastTap = upMs - lastTapUpMs
                             val nearLastTap = (upPosition - lastTapPosition).getDistance() <= DOUBLE_TAP_SLOP_PX
@@ -831,6 +869,50 @@ private class FlingHandle {
         ChartDiagnosticsHook.onGesture?.invoke("FLING", false)
     }
 }
+
+/**
+ * The news flag under a touch, or null when the touch is not on the strip
+ * (Step 12.3).
+ *
+ * # Why the transformer is rebuilt here rather than shared with the draw pass
+ *
+ * The draw pass builds its transformer inside the `Canvas` lambda, which the
+ * gesture loop cannot see, and the viewport it uses is the one being drawn — which
+ * during a gesture is the local `viewport` Compose state, the same value passed in
+ * here. Rebuilding from that value is therefore exact, not an approximation, and it
+ * avoids threading a second piece of state through the composable that could fall
+ * out of step with the one the user is looking at.
+ */
+private fun newsFlagAt(
+    touch: Offset,
+    state: ChartRenderState,
+    viewport: ChartViewport,
+    plotWidthPx: Float,
+): NewsFlagHit? {
+    if (state.newsFlags.isEmpty() || plotWidthPx <= 0f) return null
+    val transformer = ChartCoordinateTransformer(
+        plotWidthPx = plotWidthPx,
+        plotHeightPx = 1f,
+        viewport = viewport,
+        priceRange = state.priceRange,
+    )
+    return NewsFlagHitTester.hitTestAt(
+        touchX = touch.x,
+        touchY = touch.y,
+        flags = state.newsFlags,
+        flagX = { transformer.xOfIndex(it.index.toFloat()) },
+        tolerancePx = NEWS_FLAG_TOUCH_TOLERANCE_PX,
+    )
+}
+
+/**
+ * How far from a flag's staff a tap still counts, in pixels.
+ *
+ * Wider than the flag itself so a fingertip can hit a 1.5px staff at all. Two flags
+ * one bar apart can both fall inside this, which is why [NewsFlagHitTester] returns
+ * the nearest rather than the first.
+ */
+private const val NEWS_FLAG_TOUCH_TOLERANCE_PX: Float = 18f
 
 /**
  * How long a finger must be held still before it becomes a crosshair rather than a

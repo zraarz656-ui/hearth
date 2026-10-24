@@ -30,7 +30,7 @@ import androidx.room.RoomDatabase
         ChallengeRecordEntity::class,
         SettingEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class PlayerDatabase : RoomDatabase() {

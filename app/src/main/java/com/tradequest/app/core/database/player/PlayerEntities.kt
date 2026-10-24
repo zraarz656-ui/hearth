@@ -45,6 +45,20 @@ data class SeasonEntity(
     @ColumnInfo(name = "mode")
     val mode: String,
 
+    /**
+     * Whether this season hides absolute dates and dataset identity (Step 12.5).
+     *
+     * Stored on the season rather than in preferences because it is a property of
+     * the *challenge*, chosen before it starts (Journey A step 5) and part of what
+     * the attempt was. A setting that could be flipped mid-season would let a
+     * player reveal the dates of a blind challenge and then hide them again, which
+     * defeats the mode.
+     *
+     * Defaults to false so the additive migration has a value for existing rows.
+     */
+    @ColumnInfo(name = "blindMode", defaultValue = "0")
+    val blindMode: Boolean = false,
+
     /** ACTIVE, PASSED, FAILED or ABANDONED. */
     @ColumnInfo(name = "status")
     val status: String,

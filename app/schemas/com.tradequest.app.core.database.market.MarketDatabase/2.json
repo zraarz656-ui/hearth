@@ -1,0 +1,389 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 2,
+    "identityHash": "93aff70c042a3d06c611c2b201261194",
+    "entities": [
+      {
+        "tableName": "MarketDataset",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`datasetId` TEXT NOT NULL, `displayName` TEXT NOT NULL, `instrument` TEXT NOT NULL, `startTimestampUtcMs` INTEGER NOT NULL, `endTimestampUtcMs` INTEGER NOT NULL, `candleCount` INTEGER NOT NULL, `contentHash` TEXT NOT NULL, `validationStatus` TEXT NOT NULL, `sourceDescription` TEXT NOT NULL, `importedAtUtcMs` INTEGER NOT NULL, PRIMARY KEY(`datasetId`))",
+        "fields": [
+          {
+            "fieldPath": "datasetId",
+            "columnName": "datasetId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "displayName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "instrument",
+            "columnName": "instrument",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startTimestampUtcMs",
+            "columnName": "startTimestampUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endTimestampUtcMs",
+            "columnName": "endTimestampUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "candleCount",
+            "columnName": "candleCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "contentHash",
+            "columnName": "contentHash",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "validationStatus",
+            "columnName": "validationStatus",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceDescription",
+            "columnName": "sourceDescription",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "importedAtUtcMs",
+            "columnName": "importedAtUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "datasetId"
+          ]
+        }
+      },
+      {
+        "tableName": "Candle1m",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`datasetId` TEXT NOT NULL, `timestampUtcMs` INTEGER NOT NULL, `openUnits` INTEGER NOT NULL, `highUnits` INTEGER NOT NULL, `lowUnits` INTEGER NOT NULL, `closeUnits` INTEGER NOT NULL, `tickVolume` INTEGER NOT NULL, PRIMARY KEY(`datasetId`, `timestampUtcMs`), FOREIGN KEY(`datasetId`) REFERENCES `MarketDataset`(`datasetId`) ON UPDATE NO ACTION ON DELETE RESTRICT )",
+        "fields": [
+          {
+            "fieldPath": "datasetId",
+            "columnName": "datasetId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timestampUtcMs",
+            "columnName": "timestampUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "openUnits",
+            "columnName": "openUnits",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "highUnits",
+            "columnName": "highUnits",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lowUnits",
+            "columnName": "lowUnits",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "closeUnits",
+            "columnName": "closeUnits",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tickVolume",
+            "columnName": "tickVolume",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "datasetId",
+            "timestampUtcMs"
+          ]
+        },
+        "foreignKeys": [
+          {
+            "table": "MarketDataset",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "datasetId"
+            ],
+            "referencedColumns": [
+              "datasetId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "NewsEvent",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`newsId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `datasetId` TEXT NOT NULL, `publishedAtUtcMs` INTEGER NOT NULL, `headline` TEXT NOT NULL, `body` TEXT NOT NULL, `category` TEXT NOT NULL DEFAULT 'OTHER', `impact` TEXT NOT NULL, `forecast` TEXT, `previous` TEXT, `actual` TEXT, `reactionNote` TEXT, `reactionWindowMinutes` INTEGER NOT NULL DEFAULT 0, FOREIGN KEY(`datasetId`) REFERENCES `MarketDataset`(`datasetId`) ON UPDATE NO ACTION ON DELETE RESTRICT )",
+        "fields": [
+          {
+            "fieldPath": "newsId",
+            "columnName": "newsId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "datasetId",
+            "columnName": "datasetId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "publishedAtUtcMs",
+            "columnName": "publishedAtUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "headline",
+            "columnName": "headline",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "body",
+            "columnName": "body",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "category",
+            "columnName": "category",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'OTHER'"
+          },
+          {
+            "fieldPath": "impact",
+            "columnName": "impact",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "forecast",
+            "columnName": "forecast",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "previous",
+            "columnName": "previous",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "actual",
+            "columnName": "actual",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "reactionNote",
+            "columnName": "reactionNote",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "reactionWindowMinutes",
+            "columnName": "reactionWindowMinutes",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "newsId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_NewsEvent_datasetId_publishedAtUtcMs",
+            "unique": false,
+            "columnNames": [
+              "datasetId",
+              "publishedAtUtcMs"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_NewsEvent_datasetId_publishedAtUtcMs` ON `${TABLE_NAME}` (`datasetId`, `publishedAtUtcMs`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "MarketDataset",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "datasetId"
+            ],
+            "referencedColumns": [
+              "datasetId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "MarketClosure",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`datasetId` TEXT NOT NULL, `startUtcMs` INTEGER NOT NULL, `endUtcMs` INTEGER NOT NULL, `reason` TEXT NOT NULL, `missingMinuteCount` INTEGER NOT NULL, PRIMARY KEY(`datasetId`, `startUtcMs`), FOREIGN KEY(`datasetId`) REFERENCES `MarketDataset`(`datasetId`) ON UPDATE NO ACTION ON DELETE RESTRICT )",
+        "fields": [
+          {
+            "fieldPath": "datasetId",
+            "columnName": "datasetId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startUtcMs",
+            "columnName": "startUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endUtcMs",
+            "columnName": "endUtcMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "reason",
+            "columnName": "reason",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "missingMinuteCount",
+            "columnName": "missingMinuteCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "datasetId",
+            "startUtcMs"
+          ]
+        },
+        "foreignKeys": [
+          {
+            "table": "MarketDataset",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "datasetId"
+            ],
+            "referencedColumns": [
+              "datasetId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "DatasetValidation",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`datasetId` TEXT NOT NULL, `status` TEXT NOT NULL, `errorCount` INTEGER NOT NULL, `warningCount` INTEGER NOT NULL, `missingMinuteCount` INTEGER NOT NULL, `duplicateCount` INTEGER NOT NULL, `coveragePercent` REAL NOT NULL, `issuesJson` TEXT NOT NULL, PRIMARY KEY(`datasetId`), FOREIGN KEY(`datasetId`) REFERENCES `MarketDataset`(`datasetId`) ON UPDATE NO ACTION ON DELETE RESTRICT )",
+        "fields": [
+          {
+            "fieldPath": "datasetId",
+            "columnName": "datasetId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "errorCount",
+            "columnName": "errorCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "warningCount",
+            "columnName": "warningCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "missingMinuteCount",
+            "columnName": "missingMinuteCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "duplicateCount",
+            "columnName": "duplicateCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "coveragePercent",
+            "columnName": "coveragePercent",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "issuesJson",
+            "columnName": "issuesJson",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "datasetId"
+          ]
+        },
+        "foreignKeys": [
+          {
+            "table": "MarketDataset",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "datasetId"
+            ],
+            "referencedColumns": [
+              "datasetId"
+            ]
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '93aff70c042a3d06c611c2b201261194')"
+    ]
+  }
+}

@@ -48,6 +48,24 @@ data class NewsItem(
     val headline: String,
     val body: String,
     val impact: String,
+    /**
+     * Category as stored, parsed through `NewsCategory.fromStored` (Step 12.1).
+     *
+     * Left as the stored string here, like [impact]: this type is the
+     * repository's read model, and parsing is the domain's job. The parsed
+     * enums appear on `NewsRelease`.
+     */
+    val category: String = "OTHER",
+    /** Consensus forecast, or null when the source has none. */
+    val forecast: String? = null,
+    /** Previous reading, or null when the source has none. */
+    val previous: String? = null,
+    /** The released figure, or null before the release. */
+    val actual: String? = null,
+    /** Free-text reaction note; visibility is gated by the projection. */
+    val reactionNote: String? = null,
+    /** Minutes after release before the reaction note becomes visible. */
+    val reactionWindowMinutes: Int = 0,
 )
 
 /** A stored market closure inside one dataset. */

@@ -13,6 +13,7 @@ import com.tradequest.app.feature.history.HistoryScreen
 import com.tradequest.app.feature.home.HomeScreen
 import com.tradequest.app.feature.journal.JournalScreen
 import com.tradequest.app.feature.market.MarketLibraryScreen
+import com.tradequest.app.feature.news.NewsScheduleSource
 import com.tradequest.app.feature.news.NewsScreen
 import com.tradequest.app.feature.settings.SettingsScreen
 import com.tradequest.app.feature.trading.TradingScreen
@@ -25,6 +26,7 @@ fun TradeQuestNavHost(
     challengeLauncher: ChallengeLauncher,
     sessionSource: TradingSessionSource,
     challengeSource: ChallengeOverviewSource,
+    newsScheduleSource: NewsScheduleSource,
     modifier: Modifier = Modifier,
 ) {
     NavHost(
@@ -40,13 +42,17 @@ fun TradeQuestNavHost(
             )
         }
         composable(Destination.TRADING.route) {
-            TradingScreen(repository = marketRepository, sessionSource = sessionSource)
+            TradingScreen(
+                repository = marketRepository,
+                sessionSource = sessionSource,
+                newsSource = newsScheduleSource,
+            )
         }
         composable(Destination.CHALLENGE.route) {
             ChallengeDashboardScreen(source = challengeSource)
         }
         composable(Destination.JOURNAL.route) { JournalScreen() }
-        composable(Destination.NEWS.route) { NewsScreen() }
+        composable(Destination.NEWS.route) { NewsScreen(source = newsScheduleSource) }
         composable(Destination.HISTORY.route) {
             HistoryScreen(source = challengeSource)
         }

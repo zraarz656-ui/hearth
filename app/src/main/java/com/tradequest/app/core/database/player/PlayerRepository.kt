@@ -63,6 +63,7 @@ class PlayerRepository(
         startedAtSimUtcMs: Long,
         createdAtRealUtcMs: Long,
         confirmAbandon: Boolean = false,
+        blindMode: Boolean = false,
     ): SeasonStartResult {
         val dataset = marketRepository.getDataset(datasetId)
             ?: return SeasonStartResult.DatasetNotFound(datasetId)
@@ -83,6 +84,7 @@ class PlayerRepository(
                 seasonId = seasonId,
                 datasetId = datasetId,
                 mode = mode.name,
+                blindMode = blindMode,
                 status = SeasonStatus.ACTIVE.name,
                 startingBalanceMicros = startingBalanceMicros,
                 balanceMicros = startingBalanceMicros,

@@ -9,6 +9,7 @@ current, correct document would not prove the check can fail.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -43,9 +44,15 @@ def all_failures(text: str) -> list[str]:
 
 
 class HeadingParsing(unittest.TestCase):
-    def test_real_document_has_the_ten_phases(self):
-        self.assertEqual([n for n, *_ in phase_headings(REAL)],
-                         [0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+    def test_real_document_phases_are_contiguous_from_zero(self):
+        # The document gains a phase each time one completes, so pinning an
+        # exact list here would go stale on every phase and fail the CI job
+        # that runs these tests. Assert the shape instead: a run starting at 0
+        # with no gaps.
+        numbers = [n for n, *_ in phase_headings(REAL)]
+        self.assertTrue(numbers, "no phase headings parsed from the document")
+        self.assertEqual(numbers, list(range(len(numbers))))
+        self.assertEqual(numbers[0], 0)
 
     def test_heading_offsets_are_increasing(self):
         offsets = [off for _, _, off, _ in phase_headings(REAL)]
@@ -68,7 +75,16 @@ class Contiguity(unittest.TestCase):
         heads = phase_headings(text)
         failures: list[str] = []
         check_no_committed_phase_is_undocumented(heads, failures)
-        self.assertTrue(any("[9]" in f for f in failures), failures)
+        # The message lists every committed-but-undocumented phase, and that
+        # list grows as the document does (today it ends at the latest phase).
+        # Match the parsed numbers rather than a bracketed substring, so the
+        # assertion does not depend on how many phases follow Phase 9.
+        undocumented: set[int] = set()
+        for f in failures:
+            m = re.search(r"no section: \[([\d,\s]*)\]", f)
+            if m:
+                undocumented |= {int(x) for x in re.findall(r"\d+", m.group(1))}
+        self.assertIn(9, undocumented, failures)
 
     def test_a_duplicate_is_caught(self):
         text = REAL.replace("## Phase 5 — Trading",

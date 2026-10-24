@@ -2292,10 +2292,15 @@ It checks three things:
    Commit subjects (`Phase 9: ...`) do encode it, so they are cross-referenced.
    Without git, the check degrades to document-only instead of failing.
 
-Tests: `python3 -m unittest discover -s tools/tests -t .` (12 tests). Most are
+Tests: `python3 -m unittest discover -s tools/tests -t .`. Most are
 negative - they remove a section, a report, or a single field and assert the
 check fails - because a test that only passes on the current correct document
-would not prove the check can fail.
+would not prove the check can fail. Assertions must not pin the *number* of
+phases or the exact bracketed list in a failure message: the document gains a
+phase each time one completes, so a pinned value goes stale and turns the CI
+job red for a reason unrelated to the change under review. Assert the shape
+(headings are a gap-free run from 0) and parse the phase numbers out of the
+message instead.
 
 ### Enforcement: the hook and the workflow (2026-10-22)
 
